@@ -1,0 +1,74 @@
+[
+  {
+    "id":"ace-data-cloud",
+    "symbol":"$ace",
+    "name":"Ace Data Cloud",
+    "current_price":0.00563991,
+    "price_change_percentage_30d_in_currency":10460.869324166,
+    "market_cap":5543124,
+    "total_volume":3605993.0
+  },
+  {
+    "id":"ore",
+    "symbol":"ore",
+    "name":"Ore",
+    "current_price":135.33,
+    "price_change_percentage_30d_in_currency":1436.7476680161,
+    "market_cap":56075969,
+    "total_volume":3385921.0
+  },
+  {
+    "id":"vpay",
+    "symbol":"vpay",
+    "name":"VPay",
+    "current_price":0.01096448,
+    "price_change_percentage_30d_in_currency":1212.6447328468,
+    "market_cap":10964483,
+    "total_volume":1878499.0
+  },
+  {
+    "id":"kora",
+    "symbol":"sn71",
+    "name":"Kora",
+    "current_price":5.45,
+    "price_change_percentage_30d_in_currency":1054.0346946942,
+    "market_cap":15201552,
+    "total_volume":5166289.0
+  },
+  {
+    "id":"xpin-network",
+    "symbol":"xpin",
+    "name":"XPIN Network",
+    "current_price":0.00605552,
+    "price_change_percentage_30d_in_currency":606.2204686241,
+    "market_cap":93575848,
+    "total_volume":13103274.0
+  },
+  {
+    "id":"aurra-by-virtuals",
+    "symbol":"aura",
+    "name":"Aurra by Virtuals",
+    "current_price":0.00459081,
+    "price_change_percentage_30d_in_currency":526.6594324644,
+    "market_cap":4590812,
+    "total_volume":1598961.0
+  },
+  {
+    "id":"seda-2",
+    "symbol":"seda",
+    "name":"SEDA",
+    "current_price":0.20926,
+    "price_change_percentage_30d_in_currency":431.9155942083,
+    "market_cap":129052229,
+    "total_volume":5394164.0
+  },
+  {
+    "id":"pulsechain-peacock",
+    "symbol":"pcock",
+    "name":"PulseChain Peacock",
+    "current_price":0.02474484,
+    "price_change_percentage_30d_in_currency":391.267680141,
+    "market_cap":20887064,
+    "total_volume":1043568.0
+  }
+]

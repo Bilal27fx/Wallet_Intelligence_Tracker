@@ -1,0 +1,20 @@
+[
+  {
+    "symbol": "cate",
+    "name": "CateCoin",
+    "platform": "ethereum",
+    "contract": "0x051fb509e4a775fabd257611eea1efaed8f91359"
+  },
+  {
+    "symbol": "edge",
+    "name": "Definitive",
+    "platform": "base",
+    "contract": "0xED6E000dEF95780fb89734c07EE2ce9F6dcAf110"
+  },
+  {
+    "symbol": "drb",
+    "name": "DebtReliefBot",
+    "platform": "bnb",
+    "contract": "0x485d37ca1c8d4e0b5b11b87604816a4843c079ed"
+  }
+]

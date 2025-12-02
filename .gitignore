@@ -1,0 +1,52 @@
+# Environment variables with sensitive data
+.env
+whale_tracket_tg_bot_V1/.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.claude/
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqbpro
+data/db/
+
+# ChromeDriver binaries
+chromedriver*
+**/chromedriver*
+
+# Cache files
+data/cache/
+*.pkl
+
+# Large data files
+data/backtesting/
+data/raw/csv/
+data/processed/
+
+# Temporary files
+*.tmp
+*.temp

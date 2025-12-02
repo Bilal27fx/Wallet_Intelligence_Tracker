@@ -1,0 +1,38 @@
+[
+  {
+    "symbol": "ab",
+    "name": "AB",
+    "platform": "bnb",
+    "contract": "0x95034f653d5d161890836ad2b6b8cc49d14e029a"
+  },
+  {
+    "symbol": "spx",
+    "name": "SPX6900",
+    "platform": "ethereum",
+    "contract": "0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c"
+  },
+  {
+    "symbol": "cheems",
+    "name": "Cheems Token",
+    "platform": "bnb",
+    "contract": "0x0df0587216a4a1bb7d5082fdc491d93d2dd4b413"
+  },
+  {
+    "symbol": "virtual",
+    "name": "Virtuals Protocol",
+    "platform": "ethereum",
+    "contract": "0x44ff8620b8cA30902395A7bD3F2407e1A091BF73"
+  },
+  {
+    "symbol": "neiro",
+    "name": "Neiro",
+    "platform": "ethereum",
+    "contract": "0x812ba41e071c7b7fa4ebcfb62df5f45f6fa853ee"
+  },
+  {
+    "symbol": "xcn",
+    "name": "Onyxcoin",
+    "platform": "ethereum",
+    "contract": "0xA2cd3D43c775978A96BdBf12d733D5A1ED94fb18"
+  }
+]

@@ -1,0 +1,115 @@
+{
+  "timestamp": "2025-09-11T17:59:13.522767",
+  "new_tokens": [
+    {
+      "token": "MYSTERY",
+      "amount": 320000000000.0,
+      "usd_value": 505.70306758400005,
+      "contract_address": "0x64c5cba9a1bfbd2a5faf601d91beff2dcac2c974",
+      "chain": "ethereum",
+      "fungible_id": "2e5b29a5-d2a4-406a-889f-0d9ac2b72705",
+      "wallet_address": "0xdc158f9344eb5edb59a158061a114620ae7809bc",
+      "discovery_timestamp": "2025-09-11T17:47:58.634202"
+    },
+    {
+      "token": "VIRTUAL",
+      "amount": 3256.435010082181,
+      "usd_value": 4026.1422022038328,
+      "contract_address": "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b",
+      "chain": "base",
+      "fungible_id": "d99e418f-fd3f-4a90-8a01-9a2abfd9773e",
+      "wallet_address": "0x2268c5c6d586a59cfc73eaad08ebcc78a2781a41",
+      "discovery_timestamp": "2025-09-11T17:48:54.312689"
+    },
+    {
+      "token": "OPENX",
+      "amount": 21524.263847858292,
+      "usd_value": 7464.441648132958,
+      "contract_address": "0xa66b448f97cbf58d12f00711c02bac2d9eac6f7f",
+      "chain": "base",
+      "fungible_id": "5ff0b994-9fce-4307-ab51-3c3f9ad8fc35",
+      "wallet_address": "0xfbbd17c3e7b609dc70b622991e6253c833923e95",
+      "discovery_timestamp": "2025-09-11T17:51:13.231398"
+    },
+    {
+      "token": "XYO",
+      "amount": 79864.68907662,
+      "usd_value": 808.9690823705968,
+      "contract_address": "0x55296f69f40ea6d20e478533c15a6b08b654e758",
+      "chain": "ethereum",
+      "fungible_id": "0x55296f69f40ea6d20e478533c15a6b08b654e758",
+      "wallet_address": "0xbfd5b45231a12018d7d6768df9ed7ce0ae6cdbcb",
+      "discovery_timestamp": "2025-09-11T17:51:48.450501"
+    },
+    {
+      "token": "PROMPT",
+      "amount": 8439.562240745277,
+      "usd_value": 1553.652452314005,
+      "contract_address": "0x30c7235866872213f68cb1f08c37cb9eccb93452",
+      "chain": "base",
+      "fungible_id": "22cf00e1-fc0b-46d3-8027-887de7f0433f",
+      "wallet_address": "0xbfd5b45231a12018d7d6768df9ed7ce0ae6cdbcb",
+      "discovery_timestamp": "2025-09-11T17:51:48.450501"
+    },
+    {
+      "token": "EIGEN",
+      "amount": 35315.615404630415,
+      "usd_value": 50958.30228241562,
+      "contract_address": "0x2081ab0d9ec9e4303234ab26d86b20b3367946ee",
+      "chain": "base",
+      "fungible_id": "becf524c-9b6e-4a04-94f2-a72a4d19328f",
+      "wallet_address": "0x8b73c11e053581620bf5d7826d0942c50cb7b9cf",
+      "discovery_timestamp": "2025-09-11T17:52:50.488174"
+    },
+    {
+      "token": "MOB",
+      "amount": 6029707357.639552,
+      "usd_value": 600.6286376390029,
+      "contract_address": "0x7e72d6410803c40e73806f2a72e3eade5d075cc0",
+      "chain": "base",
+      "fungible_id": "1eed44c7-e0d7-4c19-bbae-4581bfd28b59",
+      "wallet_address": "0x1b53f88ed815d30a5aa2fe0dbe3da852844bfacc",
+      "discovery_timestamp": "2025-09-11T17:54:51.854248"
+    },
+    {
+      "token": "#ATTENTIONTOKEN",
+      "amount": 142537497.8994288,
+      "usd_value": 622.2662400160161,
+      "contract_address": "0x927c1cb735f3a24376b30927239494070eecb54e",
+      "chain": "base",
+      "fungible_id": "e9777e14-4820-495e-8dc0-c1603687b39e",
+      "wallet_address": "0x44df085447dbebcf69c6675c3b8a795c7fdeb3f4",
+      "discovery_timestamp": "2025-09-11T17:56:17.262705"
+    },
+    {
+      "token": "WETH",
+      "amount": 0.1200001,
+      "usd_value": 529.05652489687,
+      "contract_address": "0x3439153eb7af838ad19d56e1571fbd09333c2809",
+      "chain": "abstract",
+      "fungible_id": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "wallet_address": "0xb8277cfb3361622e0f5e37c88341601824b92f94",
+      "discovery_timestamp": "2025-09-11T17:57:35.084596"
+    },
+    {
+      "token": "ETH",
+      "amount": 0.3216840127774223,
+      "usd_value": 1418.5975447872825,
+      "contract_address": null,
+      "chain": "abstract",
+      "fungible_id": "eth",
+      "wallet_address": "0xea7fe8b57f1eadf03b8cf2306119fee3afb1906f",
+      "discovery_timestamp": "2025-09-11T17:57:50.491569"
+    },
+    {
+      "token": "EVAL",
+      "amount": 13964015.125835923,
+      "usd_value": 16631.10647784849,
+      "contract_address": "0xdd78523217390bb0d49c7601e7e54c36d71622f0",
+      "chain": "base",
+      "fungible_id": "62ab03f9-3de6-46f0-8113-519c9bdd77a7",
+      "wallet_address": "0xea7fe8b57f1eadf03b8cf2306119fee3afb1906f",
+      "discovery_timestamp": "2025-09-11T17:57:50.491569"
+    }
+  ]
+}
