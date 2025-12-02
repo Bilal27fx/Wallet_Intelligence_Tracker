@@ -28,6 +28,13 @@ WIT (Wallet Intelligence Toolkit) is a comprehensive system designed to track hi
 
 *System running on VPS with automated detection cycles*
 
+### Telegram Alert System
+<p align="center">
+  <img src="./assets/Telegram_notification.png" alt="Telegram Notification" width="400"/>
+</p>
+
+*Real-time consensus signals delivered via Telegram with complete token metrics and quality assessment*
+
 ## Features
 
 - **Token Discovery**: Identify top-performing tokens across multiple chains (Base, BNB, Ethereum)
