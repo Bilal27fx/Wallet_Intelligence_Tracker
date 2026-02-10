@@ -12,7 +12,7 @@ early_buyers AS (
     MIN(evt.evt_block_time) AS first_buy_date,
     COUNT(*) AS number_of_trades_early,
     SUM(evt.value / POWER(10, tok.decimals)) AS total_tokens_received_early
-  FROM erc20_base.evt_Transfer AS evt
+  FROM erc20_ethereum.evt_Transfer AS evt
   JOIN tokens.erc20 AS tok
     ON evt.contract_address = tok.contract_address
   JOIN parameters AS p
@@ -28,12 +28,12 @@ wallet_total_tx AS (
     COUNT(*) AS nb_total_transfers
   FROM (
     SELECT evt.to AS address
-    FROM erc20_base.evt_Transfer AS evt
+    FROM erc20_ethereum.evt_Transfer AS evt
     JOIN parameters AS p
       ON evt.contract_address = p.token_address
     UNION ALL
     SELECT evt."from" AS address
-    FROM erc20_base.evt_Transfer AS evt
+    FROM erc20_ethereum.evt_Transfer AS evt
     JOIN parameters AS p
       ON evt.contract_address = p.token_address
   ) AS t
@@ -51,7 +51,7 @@ full_balances AS (
       evt.to AS wallet,
       SUM(evt.value / POWER(10, tok.decimals)) AS received,
       0 AS sent
-    FROM erc20_base.evt_Transfer AS evt
+    FROM erc20_ethereum.evt_Transfer AS evt
     JOIN tokens.erc20 AS tok
       ON evt.contract_address = tok.contract_address
     JOIN parameters AS p
@@ -64,7 +64,7 @@ full_balances AS (
       evt."from" AS wallet,
       0 AS received,
       SUM(evt.value / POWER(10, tok.decimals)) AS sent
-    FROM erc20_base.evt_Transfer AS evt
+    FROM erc20_ethereum.evt_Transfer AS evt
     JOIN tokens.erc20 AS tok
       ON evt.contract_address = tok.contract_address
     JOIN parameters AS p
@@ -83,18 +83,37 @@ final AS (
     eb.total_tokens_received_early,
     fb.total_bought,
     fb.total_sold,
-    fb.current_balance
+    fb.current_balance,
+    -- Calcul du profit réalisé et potentiel
+    CASE
+      WHEN fb.total_bought > 0 THEN fb.total_sold / fb.total_bought
+      ELSE 0
+    END AS sell_ratio,
+    fb.current_balance + fb.total_sold AS total_exposure
   FROM early_buyers AS eb
   JOIN full_balances AS fb
     ON eb.wallet = fb.wallet
   JOIN wallet_total_tx AS wt
     ON eb.wallet = wt.address
   WHERE
-    wt.nb_total_transfers <= 30
-    AND fb.current_balance > 0.1
+    wt.nb_total_transfers <= 100  -- Augmenté de 30 à 100 pour capturer plus de smart wallets actifs
+    AND (
+      fb.current_balance > 0.1  -- Wallets qui détiennent encore
+      OR (fb.total_sold > 0 AND fb.total_sold / fb.total_bought >= 1.2)  -- OU wallets qui ont vendu avec 20%+ profit
+    )
 )
 
-SELECT *
+SELECT
+  wallet,
+  first_buy_date,
+  number_of_trades_early,
+  nb_total_transfers,
+  total_tokens_received_early,
+  total_bought,
+  total_sold,
+  current_balance,
+  sell_ratio,
+  total_exposure
 FROM final
-ORDER BY total_tokens_received_early DESC
-LIMIT 100;
+ORDER BY total_exposure DESC  -- Tri par exposition totale (position + profits réalisés)
+LIMIT 1000  -- Augmenté de 300 à 1000

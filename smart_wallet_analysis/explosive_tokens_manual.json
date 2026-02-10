@@ -1,0 +1,10 @@
+[
+  
+  {
+    "token_name": "bulla",
+    "token_address": "0xd655790B0486fa681c23B955F5Ca7Cd5f5C8Cb07",
+    "chain": "base",
+    "perf_window": "2d",
+    "type": 1
+  }
+]

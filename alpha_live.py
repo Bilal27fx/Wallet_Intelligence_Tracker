@@ -11,11 +11,11 @@ from pathlib import Path
 # Ajouter le répertoire racine au path
 ROOT_DIR = Path(__file__).parent
 sys.path.append(str(ROOT_DIR))
-sys.path.append(str(ROOT_DIR / "module" / "tracking_live"))
+sys.path.append(str(ROOT_DIR / "smart_wallet_analysis" / "tracking_live"))
 
-from module.consensus_live.consensus_live_detector import run_live_consensus_detection
-from module.Telegram.telegram_bot import send_consensus_to_telegram
-from module.tracking_live.run import run_complete_live_tracking
+from smart_wallet_analysis.consensus_live.consensus_live_detector import run_live_consensus_detection
+from smart_wallet_analysis.Telegram.telegram_bot import send_consensus_to_telegram
+from smart_wallet_analysis.tracking_live.run import run_complete_live_tracking
 from datetime import datetime
 
 def run_alpha_live():
@@ -84,7 +84,7 @@ def run_alpha_live():
             
             # 4. Afficher les signaux détectés
             for signal in consensus_signals:
-                from module.Telegram.telegram_bot import AlphaIntelligenceBot
+                from smart_wallet_analysis.Telegram.telegram_bot import AlphaIntelligenceBot
                 bot = AlphaIntelligenceBot()
                 message = bot.format_alpha_signal(telegram_data[signal['symbol']])
                 print(message)
@@ -99,7 +99,7 @@ def run_alpha_live():
         print("\n🤖 PHASE 4: SCAN COMPLETION NOTIFICATION")
         print("=" * 50)
         try:
-            from module.Telegram.telegram_bot import AlphaIntelligenceBot
+            from smart_wallet_analysis.Telegram.telegram_bot import AlphaIntelligenceBot
             bot = AlphaIntelligenceBot()
             bot.send_scan_completion_message()
             print("✅ Scan completion message sent to Telegram")

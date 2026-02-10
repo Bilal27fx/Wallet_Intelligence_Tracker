@@ -13,12 +13,12 @@ from pathlib import Path
 # Ajouter le module à sys.path
 ROOT_DIR = Path(__file__).parent
 sys.path.append(str(ROOT_DIR))
-sys.path.append(str(ROOT_DIR / "module" / "tracking_live"))
+sys.path.append(str(ROOT_DIR / "smart_wallet_analysis" / "tracking_live"))
 
 # Imports des modules
-from module.consensus_live.consensus_live_detector import run_live_consensus_detection
-from module.Telegram.telegram_bot import send_consensus_to_telegram
-from module.tracking_live.run import run_complete_live_tracking
+from smart_wallet_analysis.consensus_live.consensus_live_detector import run_live_consensus_detection
+from smart_wallet_analysis.Telegram.telegram_bot import send_consensus_to_telegram
+from smart_wallet_analysis.tracking_live.run import run_complete_live_tracking
 import logging
 
 # Configuration du logging
@@ -226,8 +226,8 @@ def run_alpha_test():
     try:
         # Test 1: Import des modules
         print("1️⃣ Test des imports...")
-        from module.consensus_live.consensus_live_detector import get_smart_wallets
-        from module.Telegram.telegram_bot import AlphaIntelligenceBot
+        from smart_wallet_analysis.consensus_live.consensus_live_detector import get_smart_wallets
+        from smart_wallet_analysis.Telegram.telegram_bot import AlphaIntelligenceBot
         print("   ✅ Imports OK")
         
         # Test 2: Smart wallets
