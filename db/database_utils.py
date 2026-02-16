@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Union
 from dotenv import load_dotenv
 
+from smart_wallet_analysis.logger import get_logger
+
 # Import MySQL connector only if available
 try:
     import mysql.connector
@@ -20,6 +22,7 @@ except ImportError:
 
 # Charger les variables d'environnement
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
+logger = get_logger("db.database_utils")
 
 # Configuration BDD
 DB_TYPE = os.getenv("DB_TYPE", "sqlite")
@@ -60,7 +63,7 @@ class DatabaseManager:
             return True
             
         except Exception as e:
-            print(f"❌ Erreur connexion BDD: {e}")
+            logger.info(f"❌ Erreur connexion BDD: {e}")
             return False
     
     def disconnect(self):
@@ -87,7 +90,7 @@ class DatabaseManager:
                 return [dict(zip(columns, row)) for row in rows]
                 
         except Exception as e:
-            print(f"❌ Erreur requête: {e}")
+            logger.info(f"❌ Erreur requête: {e}")
             return []
     
     def execute_update(self, query: str, params: tuple = None) -> int:
@@ -104,7 +107,7 @@ class DatabaseManager:
             return self.cursor.rowcount
             
         except Exception as e:
-            print(f"❌ Erreur mise à jour: {e}")
+            logger.info(f"❌ Erreur mise à jour: {e}")
             return 0
     
     def __enter__(self):
@@ -176,7 +179,7 @@ def get_unprocessed_wallets(limit: int = None) -> List[Dict]:
     
     conn.close()
     
-    print(f"📊 {len(results)} wallets sans historique extrait trouvés")
+    logger.info(f"📊 {len(results)} wallets sans historique extrait trouvés")
     return results
 
 def mark_wallet_transactions_extracted(wallet_address: str) -> bool:
@@ -194,11 +197,11 @@ def mark_wallet_transactions_extracted(wallet_address: str) -> bool:
         conn.commit()
         conn.close()
         
-        print(f"✅ Wallet {wallet_address[:10]}... marqué comme traité")
+        logger.info(f"✅ Wallet {wallet_address[:10]}... marqué comme traité")
         return True
         
     except Exception as e:
-        print(f"❌ Erreur marquage wallet {wallet_address}: {e}")
+        logger.info(f"❌ Erreur marquage wallet {wallet_address}: {e}")
         return False
 
 def get_unscored_wallets(limit: int = None) -> List[str]:
@@ -223,7 +226,7 @@ def get_unscored_wallets(limit: int = None) -> List[str]:
     
     conn.close()
     
-    print(f"📊 {len(wallet_addresses)} wallets non scorés trouvés")
+    logger.info(f"📊 {len(wallet_addresses)} wallets non scorés trouvés")
     return wallet_addresses
 
 def get_unscored_wallets_with_transactions_extracted(limit: int = None) -> List[str]:
@@ -249,7 +252,7 @@ def get_unscored_wallets_with_transactions_extracted(limit: int = None) -> List[
     
     conn.close()
     
-    print(f"📊 {len(wallet_addresses)} wallets non scorés avec transactions extraites trouvés")
+    logger.info(f"📊 {len(wallet_addresses)} wallets non scorés avec transactions extraites trouvés")
     return wallet_addresses
 
 def mark_wallet_scored(wallet_address: str) -> bool:
@@ -267,11 +270,11 @@ def mark_wallet_scored(wallet_address: str) -> bool:
         conn.commit()
         conn.close()
         
-        print(f"✅ Wallet {wallet_address[:10]}... marqué comme scoré")
+        logger.info(f"✅ Wallet {wallet_address[:10]}... marqué comme scoré")
         return True
         
     except Exception as e:
-        print(f"❌ Erreur marquage scoring wallet {wallet_address}: {e}")
+        logger.info(f"❌ Erreur marquage scoring wallet {wallet_address}: {e}")
         return False
 
 # =====================================================
@@ -418,7 +421,7 @@ def update_smart_wallets_ranks():
         # Compter les smart wallets existants
         cursor.execute("SELECT COUNT(*) FROM smart_wallets WHERE score_final > 0")
         total_wallets = cursor.fetchone()[0]
-        print(f"📊 {total_wallets} smart wallets à classer")
+        logger.info(f"📊 {total_wallets} smart wallets à classer")
         
         # Mettre à jour les ranks basés sur score_final
         update_query = """
@@ -434,12 +437,12 @@ def update_smart_wallets_ranks():
         cursor.execute(update_query)
         conn.commit()
         
-        print(f"✅ Ranks mis à jour avec succès!")
+        logger.info(f"✅ Ranks mis à jour avec succès!")
         conn.close()
         return True
         
     except Exception as e:
-        print(f"❌ Erreur mise à jour ranks: {e}")
+        logger.info(f"❌ Erreur mise à jour ranks: {e}")
         if conn:
             conn.rollback()
             conn.close()
@@ -541,20 +544,20 @@ def get_database_stats() -> Dict:
 
 if __name__ == "__main__":
     # Test des fonctions
-    print("🔍 Test des fonctions de base de données")
+    logger.info("🔍 Test des fonctions de base de données")
     
     # Stats
     stats = get_database_stats()
-    print(f"📊 Stats BDD: {stats}")
+    logger.info(f"📊 Stats BDD: {stats}")
     
     # Test cache
     test_data = {"test": "value", "timestamp": datetime.now().isoformat()}
     set_cache("test_key", test_data, "test_cache")
     
     cached = get_cache("test_key")
-    print(f"🗂️ Cache test: {cached}")
+    logger.info(f"🗂️ Cache test: {cached}")
     
-    print("✅ Tests terminés")
+    logger.info("✅ Tests terminés")
 
 def create_token_analytics_table():
     """Crée la table token_analytics si elle n'existe pas"""
@@ -570,10 +573,10 @@ def create_token_analytics_table():
         cursor.execute(sql_script)
         conn.commit()
         conn.close()
-        print("✅ Table token_analytics créée/vérifiée")
+        logger.info("✅ Table token_analytics créée/vérifiée")
         return True
     except Exception as e:
-        print(f"❌ Erreur création table token_analytics: {e}")
+        logger.info(f"❌ Erreur création table token_analytics: {e}")
         return False
 
 def create_wallet_profiles_table():
@@ -590,10 +593,10 @@ def create_wallet_profiles_table():
         cursor.execute(sql_script)
         conn.commit()
         conn.close()
-        print("✅ Table wallet_profiles créée/vérifiée")
+        logger.info("✅ Table wallet_profiles créée/vérifiée")
         return True
     except Exception as e:
-        print(f"❌ Erreur création table wallet_profiles: {e}")
+        logger.info(f"❌ Erreur création table wallet_profiles: {e}")
         return False
 
 def save_token_analytics_to_db(wallet_address: str, token_results: List[Dict]) -> bool:
@@ -680,11 +683,11 @@ def save_token_analytics_to_db(wallet_address: str, token_results: List[Dict]) -
         
         conn.commit()
         conn.close()
-        print(f"💾 {len(token_results)} tokens sauvés dans token_analytics")
+        logger.info(f"💾 {len(token_results)} tokens sauvés dans token_analytics")
         return True
         
     except Exception as e:
-        print(f"❌ Erreur sauvegarde token analytics: {e}")
+        logger.info(f"❌ Erreur sauvegarde token analytics: {e}")
         return False
 
 def save_wallet_profile_to_db(wallet_analysis: Dict) -> bool:
@@ -801,7 +804,7 @@ def save_wallet_profile_to_db(wallet_analysis: Dict) -> bool:
         
         conn.commit()
         conn.close()
-        print(f"💾 Profil wallet {wallet_address[:12]}... sauvé dans wallet_profiles")
+        logger.info(f"💾 Profil wallet {wallet_address[:12]}... sauvé dans wallet_profiles")
         
         # Si score total >= 40, sauver aussi dans smart_wallets  
         if wallet_analysis.get('total_score', 0) >= 40:
@@ -810,7 +813,7 @@ def save_wallet_profile_to_db(wallet_analysis: Dict) -> bool:
         return True
         
     except Exception as e:
-        print(f"❌ Erreur sauvegarde wallet profile: {e}")
+        logger.info(f"❌ Erreur sauvegarde wallet profile: {e}")
         return False
 
 def create_consensus_live_table():
@@ -904,11 +907,11 @@ def create_consensus_live_table():
         
         conn.commit()
         conn.close()
-        print("✅ Tables consensus_live et consensus_whales créées/vérifiées")
+        logger.info("✅ Tables consensus_live et consensus_whales créées/vérifiées")
         return True
         
     except Exception as e:
-        print(f"❌ Erreur création tables consensus: {e}")
+        logger.info(f"❌ Erreur création tables consensus: {e}")
         return False
 
 def save_consensus_to_db(consensus_data: dict) -> bool:
@@ -1008,11 +1011,11 @@ def save_consensus_to_db(consensus_data: dict) -> bool:
         
         conn.commit()
         conn.close()
-        print(f"✅ {len(consensus_data)} consensus sauvegardés en base")
+        logger.info(f"✅ {len(consensus_data)} consensus sauvegardés en base")
         return True
         
     except Exception as e:
-        print(f"❌ Erreur sauvegarde consensus: {e}")
+        logger.info(f"❌ Erreur sauvegarde consensus: {e}")
         return False
 
 def get_consensus_from_db(hours_back: int = 24) -> dict:
@@ -1125,11 +1128,11 @@ def get_consensus_from_db(hours_back: int = 24) -> dict:
             }
         
         conn.close()
-        print(f"✅ {len(consensus_data)} consensus récupérés depuis la base")
+        logger.info(f"✅ {len(consensus_data)} consensus récupérés depuis la base")
         return consensus_data
         
     except Exception as e:
-        print(f"❌ Erreur récupération consensus: {e}")
+        logger.info(f"❌ Erreur récupération consensus: {e}")
         return {}
 
 def clean_old_consensus(days_old: int = 7):
@@ -1148,11 +1151,11 @@ def clean_old_consensus(days_old: int = 7):
         conn.commit()
         conn.close()
         
-        print(f"🧹 {deleted_count} anciens consensus supprimés (>{days_old} jours)")
+        logger.info(f"🧹 {deleted_count} anciens consensus supprimés (>{days_old} jours)")
         return deleted_count
         
     except Exception as e:
-        print(f"❌ Erreur nettoyage consensus: {e}")
+        logger.info(f"❌ Erreur nettoyage consensus: {e}")
         return 0
 
 def save_to_smart_wallets(wallet_analysis: Dict) -> bool:
@@ -1250,9 +1253,9 @@ def save_to_smart_wallets(wallet_analysis: Dict) -> bool:
         
         conn.commit()
         conn.close()
-        print(f"🎯 Smart wallet {wallet_address[:12]}... sauvé (Score: {wallet_analysis.get('total_score', 0)}/100)")
+        logger.info(f"🎯 Smart wallet {wallet_address[:12]}... sauvé (Score: {wallet_analysis.get('total_score', 0)}/100)")
         return True
         
     except Exception as e:
-        print(f"❌ Erreur sauvegarde smart wallet: {e}")
+        logger.info(f"❌ Erreur sauvegarde smart wallet: {e}")
         return False

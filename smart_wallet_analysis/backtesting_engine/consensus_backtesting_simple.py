@@ -11,12 +11,12 @@ import sqlite3
 import requests
 import time
 import json
-import os
 import numpy as np
 from datetime import datetime, timedelta, timezone
-from collections import defaultdict
 from pathlib import Path
 import argparse
+
+from smart_wallet_analysis.logger import get_logger
 
 # =============================================================================
 # CONFIGURATION SIMPLIFIÉE
@@ -32,8 +32,8 @@ class SimpleBacktestConfig:
         self.allow_mixed_signals = True       # Permettre signaux mixtes (exceptionnels + normaux)
         
         # === PARAMÈTRES TEMPORELS ===
-        self.start_date = "2024-09-01"        # Date de début du backtesting
-        self.period_days = 10                 # Période d'analyse en jours
+        self.start_date = "2025-09-01"        # Date de début du backtesting
+        self.period_days = 5             # Période d'analyse en jours
         
         # === FILTRES ===
         self.excluded_tokens = {               # Tokens à exclure
@@ -61,6 +61,7 @@ config = SimpleBacktestConfig()
 ROOT_DIR = Path(__file__).parent.parent.parent
 DB_PATH = ROOT_DIR / "data" / "db" / "wit_database.db"
 OUTPUT_DIR = ROOT_DIR / "data" / "backtesting" / "consensus_simple"
+logger = get_logger("backtesting.consensus_simple")
 
 # =============================================================================
 # FONCTIONS UTILITAIRES
@@ -70,6 +71,11 @@ def init_output_directory():
     """Initialise le dossier de sortie"""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     return OUTPUT_DIR
+
+def _is_exceptional_status(status):
+    """Retourne True si le statut wallet est excellent/exceptionnel."""
+    normalized = str(status or "").strip().upper()
+    return normalized in {"EXCEPTIONAL", "EXCELLENT"} or "EXCEPTIONAL" in normalized or "EXCELLENT" in normalized
 
 def get_current_price_dexscreener(contract_address, retries=2):
     """Récupère le prix actuel via DexScreener avec retry"""
@@ -92,7 +98,7 @@ def get_current_price_dexscreener(contract_address, retries=2):
             
         except Exception as e:
             if attempt == retries - 1:
-                print(f"⚠️ Erreur prix pour {contract_address}: {e}")
+                logger.info(f"⚠️ Erreur prix pour {contract_address}: {e}")
                 return None
             time.sleep(1)
     
@@ -123,7 +129,7 @@ def get_smart_wallets():
         return df.set_index('wallet_address').to_dict('index')
         
     except Exception as e:
-        print(f"❌ Erreur récupération smart wallets: {e}")
+        logger.info(f"❌ Erreur récupération smart wallets: {e}")
         return {}
 
 def _to_utc_z(dt: datetime) -> str:
@@ -186,7 +192,7 @@ def get_transactions_in_period_simple(start_date, end_date, smart_wallets):
         df = df.dropna(subset=['date']).reset_index(drop=True)
         
         # Ajouter d'abord les métadonnées des wallets 
-        print(f"🔄 Application des seuils avec sommation des investissements...")
+        logger.info(f"🔄 Application des seuils avec sommation des investissements...")
         
         wallet_data_list = []
         for _, row in df.iterrows():
@@ -221,8 +227,8 @@ def get_transactions_in_period_simple(start_date, end_date, smart_wallets):
             if row['investment_usd'] >= threshold_usd:
                 qualified_pairs.append((row['wallet_address'], row['symbol']))
         
-        print(f"🎯 Seuils avec sommation appliqués: {len(qualified_pairs)} wallet/token qualifiés")
-        print(f"   (sur {len(df_grouped)} combinaisons wallet/token au total)")
+        logger.info(f"🎯 Seuils avec sommation appliqués: {len(qualified_pairs)} wallet/token qualifiés")
+        logger.info(f"   (sur {len(df_grouped)} combinaisons wallet/token au total)")
         
         # Filtrer les transactions originales pour ne garder que les paires qualifiées
         if qualified_pairs:
@@ -236,7 +242,7 @@ def get_transactions_in_period_simple(start_date, end_date, smart_wallets):
         return df
         
     except Exception as e:
-        print(f"❌ Erreur récupération transactions simples: {e}")
+        logger.info(f"❌ Erreur récupération transactions simples: {e}")
         return pd.DataFrame()
 
 def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
@@ -257,7 +263,7 @@ def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
         
         # NOUVEAU: Vérifier si le token a déjà été détecté globalement
         if symbol in global_detected_tokens:
-            print(f"⏭️ Token {symbol} déjà détecté précédemment, passage au suivant")
+            logger.info(f"⏭️ Token {symbol} déjà détecté précédemment, passage au suivant")
             continue
             
         token_group = token_group.sort_values('date')
@@ -316,7 +322,7 @@ def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
                     }
                     
                     # Compter les types de wallets (une seule fois par wallet)
-                    if tx['threshold_status'] == 'EXCEPTIONAL':
+                    if _is_exceptional_status(tx['threshold_status']):
                         exceptional_whales += 1
                     else:
                         normal_whales += 1
@@ -329,17 +335,19 @@ def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
             signal_valid = False
             signal_type = ""
             
-            # RÈGLE UNIQUE: Consensus ≥2 wallets (peu importe le type)
-            if unique_whales >= config.min_whales_consensus:
+            # RÈGLE UNIQUE: Consensus >=2 wallets ET au moins 1 EXCELLENT/EXCEPTIONAL
+            if unique_whales >= config.min_whales_consensus and exceptional_whales >= 1:
                 signal_valid = True
                 if exceptional_whales >= 1 and normal_whales >= 1:
                     signal_type = "MIXED_CONSENSUS"  # Exceptionnels + normaux
-                elif exceptional_whales >= 2:
-                    signal_type = "EXCEPTIONAL_CONSENSUS"  # Que des exceptionnels
                 else:
-                    signal_type = "NORMAL_CONSENSUS"  # Que des normaux
+                    signal_type = "EXCEPTIONAL_CONSENSUS"  # Que des excellent/exceptional
             
             if signal_valid:
+                # Garde-fou: un consensus sans EXCELLENT/EXCEPTIONAL est invalide
+                if exceptional_whales < 1:
+                    continue
+
                 # Signal détecté !
                 signal_txs = window_txs
                 
@@ -377,14 +385,14 @@ def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
                 
                 # Trier par type de wallet puis par investissement
                 signal_data['whale_details'].sort(
-                    key=lambda x: (x['threshold_status'] != 'EXCEPTIONAL', -x['investment_usd'])
+                    key=lambda x: (not _is_exceptional_status(x['threshold_status']), -x['investment_usd'])
                 )
                 
                 signals_detected.append(signal_data)
                 processed_tokens.add(symbol)
                 # NOUVEAU: Ajouter au set global pour éviter re-détection
                 global_detected_tokens.add(symbol)
-                print(f"✅ Token {symbol} ajouté aux tokens détectés globalement")
+                logger.info(f"✅ Token {symbol} ajouté aux tokens détectés globalement")
                 break  # Prendre le premier signal pour ce token dans cette période
     
     return signals_detected
@@ -451,29 +459,30 @@ def calculate_performance(consensus_data):
 def run_simple_backtesting():
     """Lance le backtesting SIMPLE basé sur les seuils optimaux"""
     
-    print(f"🎯 BACKTESTING CONSENSUS SIMPLE")
-    print("=" * 80)
-    print(f"📅 Début: {config.start_date}")
-    print(f"⏰ Période d'analyse: {config.period_days} jours")
-    print(f"🐋 Consensus minimum: ≥{config.min_whales_consensus} wallets")
-    print(f"📊 Seuils optimaux: OUI (avec sommation)")
-    print(f"⚖️ Signaux solo: NON (supprimés)")
-    print("=" * 80)
+    logger.info(f"🎯 BACKTESTING CONSENSUS SIMPLE")
+    logger.info("=" * 80)
+    logger.info(f"📅 Début: {config.start_date}")
+    logger.info(f"⏰ Période d'analyse: {config.period_days} jours")
+    logger.info(f"🐋 Consensus minimum: ≥{config.min_whales_consensus} wallets")
+    logger.info("🎯 Règle qualité: au moins 1 wallet EXCELLENT/EXCEPTIONAL")
+    logger.info(f"📊 Seuils optimaux: OUI (avec sommation)")
+    logger.info(f"⚖️ Signaux solo: NON (supprimés)")
+    logger.info("=" * 80)
     
     # Charger les smart wallets
-    print(f"📖 Chargement des smart wallets...")
+    logger.info(f"📖 Chargement des smart wallets...")
     smart_wallets = get_smart_wallets()
     
     if not smart_wallets:
-        print("❌ Aucun smart wallet trouvé")
+        logger.info("❌ Aucun smart wallet trouvé")
         return [], []
     
-    print(f"✅ {len(smart_wallets)} smart wallets chargés")
+    logger.info(f"✅ {len(smart_wallets)} smart wallets chargés")
     
     # Afficher quelques exemples
-    print(f"\n📋 Exemples de smart wallets:")
+    logger.info(f"\n📋 Exemples de smart wallets:")
     for i, (wallet, data) in enumerate(list(smart_wallets.items())[:5]):
-        print(f"   {wallet[:10]}...{wallet[-8:]}: "
+        logger.info(f"   {wallet[:10]}...{wallet[-8:]}: "
               f"Seuil {data['optimal_threshold_tier']}K | "
               f"Qualité {data['quality_score']:.3f} | "
               f"ROI {data['optimal_roi']:.1f}% | "
@@ -497,14 +506,14 @@ def run_simple_backtesting():
         if period_end > end_date:
             period_end = end_date
         
-        print(f"\n📊 PÉRIODE {period_number}: {current_date.strftime('%Y-%m-%d')} → {period_end.strftime('%Y-%m-%d')}")
-        print("-" * 60)
+        logger.info(f"\n📊 PÉRIODE {period_number}: {current_date.strftime('%Y-%m-%d')} → {period_end.strftime('%Y-%m-%d')}")
+        logger.info("-" * 60)
         
         # Récupérer les transactions avec seuils SIMPLES
         df_transactions = get_transactions_in_period_simple(current_date, period_end, smart_wallets)
         
         if df_transactions.empty:
-            print("❌ Aucune transaction qualifiée dans cette période")
+            logger.info("❌ Aucune transaction qualifiée dans cette période")
             period_results.append({
                 'period_number': period_number,
                 'period_start': current_date,
@@ -514,29 +523,29 @@ def run_simple_backtesting():
                 'consensus_detected': []
             })
         else:
-            print(f"📈 {len(df_transactions)} transactions qualifiées trouvées")
-            print(f"🐋 {df_transactions['wallet_address'].nunique()} wallets actifs")
-            print(f"🪙 {df_transactions['symbol'].nunique()} tokens uniques")
+            logger.info(f"📈 {len(df_transactions)} transactions qualifiées trouvées")
+            logger.info(f"🐋 {df_transactions['wallet_address'].nunique()} wallets actifs")
+            logger.info(f"🪙 {df_transactions['symbol'].nunique()} tokens uniques")
             
             # Détecter les consensus
             consensus_detected = detect_consensus_in_period(df_transactions, detected_tokens)
             
             if consensus_detected:
-                print(f"✅ {len(consensus_detected)} consensus détectés:")
+                logger.info(f"✅ {len(consensus_detected)} consensus détectés:")
                 for signal in consensus_detected:
                     # Emoji selon le type de signal
                     type_emoji = {
                         'EXCEPTIONAL_CONSENSUS': '🌟', 
-                        'NORMAL_CONSENSUS': '🐋',
-                        'MIXED_CONSENSUS': '🎯'
+                        'MIXED_CONSENSUS': '🎯',
+                        'INVALID_CONSENSUS': '⛔'
                     }
                     emoji = type_emoji.get(signal['signal_type'], '🔍')
                     
-                    print(f"   {emoji} {signal['symbol']} ({signal['signal_type']}): "
+                    logger.info(f"   {emoji} {signal['symbol']} ({signal['signal_type']}): "
                           f"{signal['whale_count']} whales ({signal['exceptional_count']} exceptionnels + "
                           f"{signal['normal_count']} normaux), ${signal['total_investment']:,.0f}")
-                    print(f"     📅 Détecté le: {signal['detection_date'].strftime('%Y-%m-%d %H:%M')}")
-                    print(f"     🐋 Wallets participants:")
+                    logger.info(f"     📅 Détecté le: {signal['detection_date'].strftime('%Y-%m-%d %H:%M')}")
+                    logger.info(f"     🐋 Wallets participants:")
                     
                     for whale in signal['whale_details']:
                         # Trouver la première transaction de cette whale pour ce token
@@ -544,18 +553,18 @@ def run_simple_backtesting():
                         whale_date = whale_txs['date'].min().strftime('%Y-%m-%d %H:%M') if not whale_txs.empty else "N/A"
                         
                         # Emoji selon le statut
-                        status_emoji = '⭐' if whale['threshold_status'] == 'EXCEPTIONAL' else '🔷'
+                        status_emoji = '⭐' if _is_exceptional_status(whale['threshold_status']) else '🔷'
                         
-                        print(f"        {status_emoji} [{whale['threshold_status']}] "
+                        logger.info(f"        {status_emoji} [{whale['threshold_status']}] "
                               f"Seuil {whale['optimal_threshold_tier']}K | "
                               f"Q={whale['quality_score']:.3f} | "
                               f"ROI {whale['optimal_roi']:+.1f}% | "
                               f"${whale['investment_usd']:,.0f} | "
                               f"{whale_date} | "
                               f"{whale['address'][:10]}...{whale['address'][-8:]}")
-                    print()
+                    logger.info("")
             else:
-                print("❌ Aucun consensus détecté")
+                logger.info("❌ Aucun consensus détecté")
             
             # Stocker les résultats de la période
             period_results.append({
@@ -576,27 +585,27 @@ def run_simple_backtesting():
         period_number += 1
         time.sleep(0.1)
     
-    print(f"\n🎯 RÉSUMÉ GLOBAL:")
-    print("=" * 80)
-    print(f"📊 {period_number-1} périodes analysées")
-    print(f"🚀 {len(all_consensus)} consensus SIMPLES détectés au total")
+    logger.info(f"\n🎯 RÉSUMÉ GLOBAL:")
+    logger.info("=" * 80)
+    logger.info(f"📊 {period_number-1} périodes analysées")
+    logger.info(f"🚀 {len(all_consensus)} consensus SIMPLES détectés au total")
     
     if all_consensus:
         # Calculer les performances
-        print(f"\n💹 CALCUL DES PERFORMANCES")
-        print("-" * 50)
+        logger.info(f"\n💹 CALCUL DES PERFORMANCES")
+        logger.info("-" * 50)
         
         for consensus in all_consensus:
             perf = calculate_performance(consensus)
             consensus['performance'] = perf
             
             if perf['performance_pct'] is not None:
-                print(f"{perf['status']} {perf['symbol']}: "
+                logger.info(f"{perf['status']} {perf['symbol']}: "
                       f"${perf['entry_price']:.8f} → ${perf['current_price']:.8f} "
                       f"({perf['performance_pct']:+.1f}% | {perf['days_held']}j) "
                       f"[Whales: {consensus['whale_count']}]")
             else:
-                print(f"{perf['status']} {perf['symbol']}: ${perf['entry_price']:.8f}")
+                logger.info(f"{perf['status']} {perf['symbol']}: ${perf['entry_price']:.8f}")
             
             time.sleep(config.price_check_delay)
     
@@ -677,6 +686,9 @@ def export_simple_results(all_consensus, period_results):
                 'duration_hours': float((consensus['consensus_end'] - consensus['consensus_start']).total_seconds() / 3600)
             },
             'whale_count': int(consensus['whale_count']),
+            'signal_type': consensus.get('signal_type'),
+            'exceptional_count': int(consensus.get('exceptional_count', 0)),
+            'normal_count': int(consensus.get('normal_count', 0)),
             'total_investment': float(consensus['total_investment']),
             'avg_entry_price': float(consensus['avg_entry_price']),
             'whale_details': consensus['whale_details'],
@@ -698,17 +710,17 @@ def export_simple_results(all_consensus, period_results):
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(export_data, f, indent=2, ensure_ascii=False, default=str)
     
-    print(f"\n✅ Résultats SIMPLES exportés: {output_file}")
+    logger.info(f"\n✅ Résultats SIMPLES exportés: {output_file}")
     
     # Afficher les statistiques
     if stats:
-        print(f"\n📊 STATISTIQUES FINALES SIMPLES:")
-        print(f"   • Consensus détectés: {stats['total_consensus']}")
-        print(f"   • Performances mesurables: {stats['measurable_performances']}")
-        print(f"   • Performance moyenne: {stats['average_performance']:+.1f}%")
-        print(f"   • Taux de succès: {stats['success_rate']:.1f}%")
-        print(f"   • Meilleure performance: {stats['best_performance']:+.1f}%")
-        print(f"   • Investment total: ${stats['total_investment']:,.0f}")
+        logger.info(f"\n📊 STATISTIQUES FINALES SIMPLES:")
+        logger.info(f"   • Consensus détectés: {stats['total_consensus']}")
+        logger.info(f"   • Performances mesurables: {stats['measurable_performances']}")
+        logger.info(f"   • Performance moyenne: {stats['average_performance']:+.1f}%")
+        logger.info(f"   • Taux de succès: {stats['success_rate']:.1f}%")
+        logger.info(f"   • Meilleure performance: {stats['best_performance']:+.1f}%")
+        logger.info(f"   • Investment total: ${stats['total_investment']:,.0f}")
     
     return export_data
 
@@ -741,9 +753,9 @@ def main():
     
     if all_consensus:
         export_simple_results(all_consensus, period_results)
-        print(f"\n🎉 BACKTESTING SIMPLE TERMINÉ AVEC SUCCÈS!")
+        logger.info(f"\n🎉 BACKTESTING SIMPLE TERMINÉ AVEC SUCCÈS!")
     else:
-        print(f"\n❌ Aucun consensus simple détecté avec ces paramètres")
+        logger.info(f"\n❌ Aucun consensus simple détecté avec ces paramètres")
 
 if __name__ == "__main__":
     main()

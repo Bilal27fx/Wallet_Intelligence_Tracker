@@ -1,45 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Pipeline 2: Re-scoring Pipeline
-Exécuté quotidiennement pour mettre à jour les smart wallets
-
-Workflow:
-1. Récupère tous les wallets de transaction_history (déjà filtrés)
-2. Met à jour leurs transactions via tracking_live (incrémental, optimisé API)
-3. Re-score tous les wallets via score_engine
-4. Génère la nouvelle liste de smart wallets
-"""
+"""Pipeline de re-scoring quotidien des smart wallets."""
 
 import sys
 import time
 import sqlite3
-from pathlib import Path
 from datetime import datetime
 
-# Ajouter le répertoire parent au path
-ROOT = Path(__file__).parent.parent
-sys.path.append(str(ROOT))
-
-# Imports des modules
+from smart_wallet_analysis.config import DB_PATH, PIPELINES
+from smart_wallet_analysis.logger import get_logger
 from smart_wallet_analysis.tracking_live.run import run_rescoring_transaction_update
 from smart_wallet_analysis.score_engine.fifo_clean_simple import SimpleFIFOAnalyzer
 from smart_wallet_analysis.score_engine.wallet_scoring_system import score_all_wallets
 from smart_wallet_analysis.score_engine.simple_wallet_analyzer import analyze_qualified_wallets
 from smart_wallet_analysis.score_engine.optimal_threshold_analyzer import OptimalThresholdAnalyzer
-from smart_wallet_analysis.consensus_live.consensus_live_detector import run_live_consensus_detection
 from smart_wallet_analysis.wallet_tracker.wallet_token_history_simple import extract_wallet_simple_history
 
-DB_PATH = ROOT / "data" / "db" / "wit_database.db"
+_PL = PIPELINES
+logger = get_logger("scoring_pipeline.runner")
+
+
+def _log_section(title, width=70):
+    """Affiche un en-tête de section."""
+    line = "=" * width
+    logger.info("")
+    logger.info("%s", line)
+    logger.info("%s", title)
+    logger.info("%s", line)
+    logger.info("")
 
 
 def get_wallets_to_rescore():
-    """
-    Récupère tous les wallets de transaction_history
-    Ces wallets ont déjà été filtrés par le Discovery Pipeline:
-    - MIN_TOKENS_PER_WALLET = 3
-    - MIN_TOKEN_VOLUME_THRESHOLD = $500 par token
-    """
+    """Récupère tous les wallets présents dans transaction_history."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -53,160 +45,157 @@ def get_wallets_to_rescore():
         wallets = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        print(f"📊 {len(wallets)} wallets dans transaction_history")
+        logger.info("📊 %s wallets dans transaction_history", len(wallets))
         return wallets
 
     except Exception as e:
-        print(f"❌ Erreur récupération wallets: {e}")
+        logger.error("❌ Erreur récupération wallets: %s", e)
         return []
 
 
 def update_transaction_histories(wallets_list):
-    """
-    Étape 1: Mise à jour incrémentale des transactions
-    Utilise tracking_live (optimisé) au lieu de wallet_token_history (lourd)
-
-    Avantages:
-    - Détecte seulement les changements récents (24h)
-    - Met à jour uniquement les tokens modifiés
-    - Économise le quota API Zerion
-    """
-    print("\n" + "="*70)
-    print("📊 ÉTAPE 1: MISE À JOUR DES TRANSACTIONS")
-    print("="*70 + "\n")
+    """Met à jour l'historique transactions pour la liste de wallets."""
+    _log_section("📊 ÉTAPE 1: MISE À JOUR DES TRANSACTIONS")
 
     if not wallets_list:
-        print("⚠️ Aucun wallet à mettre à jour")
+        logger.warning("⚠️ Aucun wallet à mettre à jour")
         return 0
 
-    # Utilise tracking_live en mode re-scoring (sans filtre smart_wallets)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        placeholders = ','.join('?' * len(wallets_list))
+        cursor.execute(f"""
+            SELECT w FROM (
+                SELECT DISTINCT wallet_address AS w FROM transaction_history
+                WHERE wallet_address IN ({placeholders})
+            )
+            WHERE w NOT IN (SELECT DISTINCT wallet_address FROM tokens)
+        """, wallets_list)
+        wallets_without_positions = [row[0] for row in cursor.fetchall()]
+        conn.close()
+    except Exception as e:
+        logger.warning("⚠️ Erreur détection wallets sans positions: %s", e)
+        wallets_without_positions = []
+
+    if wallets_without_positions:
+        logger.warning(
+            "⚠️ %s wallet(s) sans positions dans tokens -> extraction complète",
+            len(wallets_without_positions)
+        )
+        for i, wallet in enumerate(wallets_without_positions, 1):
+            logger.info(
+                "[%s/%s] 🔄 Extraction complète: %s...",
+                i,
+                len(wallets_without_positions),
+                wallet[:12]
+            )
+            try:
+                extract_wallet_simple_history(wallet, min_value_usd=_PL["RESCORING_MIN_USD"])
+            except Exception as e:
+                logger.error("❌ Erreur extraction %s: %s", wallet[:12], e)
+        logger.info(
+            "✅ Extraction complète terminée pour %s wallet(s)",
+            len(wallets_without_positions)
+        )
+
     changes_count = run_rescoring_transaction_update(
         wallet_list=wallets_list,
-        min_usd=500,
-        hours_lookback=24
+        min_usd=_PL["RESCORING_MIN_USD"],
+        hours_lookback=_PL["RESCORING_HOURS_LOOKBACK"]
     )
 
-    print(f"\n✅ Mise à jour terminée: {changes_count} wallets avec changements\n")
+    logger.info("✅ Mise à jour terminée: %s wallets avec changements", changes_count)
     return changes_count
 
 
 def run_fifo_analysis_full():
-    """
-    Étape 2: Analyse FIFO complète
-    Traite TOUS les wallets (pas juste les nouveaux)
-    """
-    print("\n" + "="*70)
-    print("📊 ÉTAPE 2: ANALYSE FIFO (TOUS LES WALLETS)")
-    print("="*70 + "\n")
+    """Lance une analyse FIFO complète sur tous les wallets."""
+    _log_section("📊 ÉTAPE 2: ANALYSE FIFO (TOUS LES WALLETS)")
 
     try:
-        # Vider token_analytics pour forcer recalcul complet
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute("SELECT COUNT(DISTINCT wallet_address) FROM transaction_history")
         total_wallets = cursor.fetchone()[0]
-        print(f"📊 {total_wallets} wallets à analyser")
+        logger.info("📊 %s wallets à analyser", total_wallets)
 
-        print("🗑️ Suppression de l'ancienne analyse FIFO...")
+        logger.info("🗑️ Suppression de l'ancienne analyse FIFO...")
         cursor.execute("DELETE FROM token_analytics")
         conn.commit()
         conn.close()
 
-        # Lancer l'analyse FIFO (qui va maintenant tout recalculer)
-        print("🔄 Lancement de l'analyse FIFO...\n")
+        logger.info("🔄 Lancement de l'analyse FIFO...")
         analyzer = SimpleFIFOAnalyzer()
         analyzer.analyze_all_wallets()
 
-        print("\n✅ Analyse FIFO terminée\n")
+        logger.info("✅ Analyse FIFO terminée")
         return True
 
     except Exception as e:
-        print(f"❌ Erreur FIFO analysis: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("❌ Erreur FIFO analysis: %s", e)
         return False
 
 
 def run_wallet_scoring_full():
-    """
-    Étape 3: Scoring des wallets
-    """
-    print("\n" + "="*70)
-    print("📊 ÉTAPE 3: SCORING DES WALLETS")
-    print("="*70 + "\n")
+    """Lance le scoring de tous les wallets."""
+    _log_section("📊 ÉTAPE 3: SCORING DES WALLETS")
 
     try:
-        score_all_wallets(min_score=0)
+        score_all_wallets(min_score=_PL["SCORING_MIN_SCORE_FULL"])
 
-        print("\n✅ Scoring terminé\n")
+        logger.info("✅ Scoring terminé")
         return True
 
     except Exception as e:
-        print(f"❌ Erreur wallet scoring: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("❌ Erreur wallet scoring: %s", e)
         return False
 
 
 def run_simple_analysis():
-    """
-    Étape 4: Analyse simple par tiers
-    """
-    print("\n" + "="*70)
-    print("📊 ÉTAPE 4: ANALYSE PAR TIERS D'INVESTISSEMENT")
-    print("="*70 + "\n")
+    """Lance l'analyse simple par paliers."""
+    _log_section("📊 ÉTAPE 4: ANALYSE PAR TIERS D'INVESTISSEMENT")
 
     try:
         analyze_qualified_wallets()
 
-        print("\n✅ Analyse par tiers terminée\n")
+        logger.info("✅ Analyse par tiers terminée")
         return True
 
     except Exception as e:
-        print(f"❌ Erreur simple analysis: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("❌ Erreur simple analysis: %s", e)
         return False
 
 
 def run_optimal_threshold():
-    """
-    Étape 5: Calcul des seuils optimaux et sélection smart wallets
-    """
-    print("\n" + "="*70)
-    print("📊 ÉTAPE 5: SÉLECTION DES SMART WALLETS")
-    print("="*70 + "\n")
+    """Calcule les seuils optimaux et sélectionne les smart wallets."""
+    _log_section("📊 ÉTAPE 5: SÉLECTION DES SMART WALLETS")
 
     try:
         optimizer = OptimalThresholdAnalyzer()
         optimizer.analyze_all_qualified_wallets()
 
-        print("\n✅ Sélection smart wallets terminée\n")
+        logger.info("✅ Sélection smart wallets terminée")
         return True
 
     except Exception as e:
-        print(f"❌ Erreur optimal threshold: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("❌ Erreur optimal threshold: %s", e)
         return False
 
 
 def get_final_stats():
-    """Affiche les statistiques finales"""
+    """Retourne les statistiques finales du pipeline."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
-        # Smart wallets
         cursor.execute("SELECT COUNT(*) FROM smart_wallets")
         smart_count = cursor.fetchone()[0]
 
-        # Wallets qualifiés
         cursor.execute("SELECT COUNT(*) FROM wallet_qualified")
         qualified_count = cursor.fetchone()[0]
 
-        # Total wallets analysés
         cursor.execute("SELECT COUNT(DISTINCT wallet_address) FROM token_analytics")
         analyzed_count = cursor.fetchone()[0]
 
@@ -219,111 +208,77 @@ def get_final_stats():
         }
 
     except Exception as e:
-        print(f"❌ Erreur récupération stats: {e}")
+        logger.error("❌ Erreur récupération stats: %s", e)
         return {}
 
 
 def run_analysis_and_selection_only():
-    """
-    Lance uniquement les étapes 4 et 5 (analyse + sélection smart wallets)
-    Utile après avoir déjà fait FIFO + Scoring
-    """
+    """Lance uniquement l'analyse par paliers puis la sélection finale."""
     start_time = time.time()
 
-    print("\n" + "="*80)
-    print("🎯 ÉTAPES 4-5: ANALYSE & SÉLECTION")
-    print("="*80 + "\n")
+    _log_section("🎯 ÉTAPES 4-5: ANALYSE & SÉLECTION", width=80)
 
-    # Étape 4: Analyse simple
     if not run_simple_analysis():
-        print("❌ Erreur lors de l'analyse simple")
+        logger.error("❌ Erreur lors de l'analyse simple")
         return False
 
-    # Étape 5: Optimal threshold
     if not run_optimal_threshold():
-        print("❌ Erreur lors de la sélection smart wallets")
+        logger.error("❌ Erreur lors de la sélection smart wallets")
         return False
 
-    # Stats finales
     elapsed = time.time() - start_time
     stats = get_final_stats()
 
-    print("\n" + "="*80)
-    print("✅ ANALYSE & SÉLECTION TERMINÉES")
-    print("="*80)
-    print(f"⏱️ Durée: {elapsed:.1f} secondes")
-    print(f"📊 Wallets analysés: {stats.get('analyzed_wallets', 0)}")
-    print(f"🎯 Wallets qualifiés: {stats.get('qualified_wallets', 0)}")
-    print(f"⭐ Smart wallets: {stats.get('smart_wallets', 0)}")
-    print("="*80 + "\n")
+    _log_section("✅ ANALYSE & SÉLECTION TERMINÉES", width=80)
+    logger.info("⏱️ Durée: %.1f secondes", elapsed)
+    logger.info("📊 Wallets analysés: %s", stats.get('analyzed_wallets', 0))
+    logger.info("🎯 Wallets qualifiés: %s", stats.get('qualified_wallets', 0))
+    logger.info("⭐ Smart wallets: %s", stats.get('smart_wallets', 0))
 
     return True
 
 
 def run_complete_scoring_pipeline():
-    """
-    Pipeline complet de re-scoring quotidien
-
-    Workflow:
-    1. Récupération liste wallets (transaction_history)
-    2. Mise à jour transactions (tracking_live optimisé)
-    3. Analyse FIFO (tous les wallets)
-    4. Scoring wallets
-    5. Analyse simple
-    6. Sélection smart wallets
-    """
+    """Exécute le pipeline complet de re-scoring quotidien."""
     start_time = time.time()
 
-    print("\n" + "="*80)
-    print("🎯 PIPELINE 2: RE-SCORING QUOTIDIEN")
-    print("="*80)
-    print(f"⏰ Démarrage: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*80 + "\n")
+    _log_section("🎯 PIPELINE 2: RE-SCORING QUOTIDIEN", width=80)
+    logger.info("⏰ Démarrage: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
-    # Étape 0: Récupérer la liste des wallets
     wallets_to_rescore = get_wallets_to_rescore()
 
     if not wallets_to_rescore:
-        print("❌ Aucun wallet à re-scorer")
+        logger.error("❌ Aucun wallet à re-scorer")
         return False
 
-    # Étape 1: Mise à jour des transactions
     changes = update_transaction_histories(wallets_to_rescore)
 
-    # Étape 2: Analyse FIFO
     if not run_fifo_analysis_full():
-        print("❌ Erreur lors de l'analyse FIFO")
+        logger.error("❌ Erreur lors de l'analyse FIFO")
         return False
 
-    # Étape 3: Scoring
     if not run_wallet_scoring_full():
-        print("❌ Erreur lors du scoring")
+        logger.error("❌ Erreur lors du scoring")
         return False
 
-    # Étape 4: Analyse simple
     if not run_simple_analysis():
-        print("❌ Erreur lors de l'analyse simple")
+        logger.error("❌ Erreur lors de l'analyse simple")
         return False
 
-    # Étape 5: Optimal threshold
     if not run_optimal_threshold():
-        print("❌ Erreur lors de la sélection smart wallets")
+        logger.error("❌ Erreur lors de la sélection smart wallets")
         return False
 
-    # Stats finales
     elapsed = time.time() - start_time
     stats = get_final_stats()
 
-    print("\n" + "="*80)
-    print("✅ PIPELINE 2 TERMINÉ AVEC SUCCÈS")
-    print("="*80)
-    print(f"⏱️ Durée totale: {elapsed/60:.1f} minutes")
-    print(f"📊 Wallets analysés: {stats.get('analyzed_wallets', 0)}")
-    print(f"🎯 Wallets qualifiés: {stats.get('qualified_wallets', 0)}")
-    print(f"⭐ Smart wallets: {stats.get('smart_wallets', 0)}")
-    print(f"🔄 Wallets avec changements: {changes}")
-    print(f"🏁 Fin: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*80 + "\n")
+    _log_section("✅ PIPELINE 2 TERMINÉ AVEC SUCCÈS", width=80)
+    logger.info("⏱️ Durée totale: %.1f minutes", elapsed / 60)
+    logger.info("📊 Wallets analysés: %s", stats.get('analyzed_wallets', 0))
+    logger.info("🎯 Wallets qualifiés: %s", stats.get('qualified_wallets', 0))
+    logger.info("⭐ Smart wallets: %s", stats.get('smart_wallets', 0))
+    logger.info("🔄 Wallets avec changements: %s", changes)
+    logger.info("🏁 Fin: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
     return True
 
@@ -333,10 +288,8 @@ if __name__ == "__main__":
         success = run_complete_scoring_pipeline()
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:
-        print("\n⚠️ Pipeline interrompu par l'utilisateur")
+        logger.warning("⚠️ Pipeline interrompu par l'utilisateur")
         sys.exit(1)
     except Exception as e:
-        print(f"\n💥 Erreur fatale: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("💥 Erreur fatale: %s", e)
         sys.exit(1)

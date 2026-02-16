@@ -2,809 +2,352 @@ import os
 import time
 import requests
 import pandas as pd
-import json
 import sqlite3
 import uuid
-from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 
-# === Configuration ===
-load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
+from smart_wallet_analysis.config import DB_PATH, ENV_PATH, TRACKING_LIVE
+from smart_wallet_analysis.logger import get_logger
 
-# Récupération des deux clés API
+load_dotenv(dotenv_path=ENV_PATH)
+
+logger = get_logger("tracking_live.transactions")
+
+_TL = TRACKING_LIVE
+
 API_KEY_1 = os.getenv("ZERION_API_KEY")
 API_KEY_2 = os.getenv("ZERION_API_KEY_2")
 
 if not API_KEY_1:
-    raise ValueError("❌ Clé API principale manquante. Vérifie ton fichier .env (ZERION_API_KEY).")
+    raise ValueError("Clé API principale manquante (ZERION_API_KEY)")
 if not API_KEY_2:
-    raise ValueError("❌ Clé API secondaire manquante. Vérifie ton fichier .env (ZERION_API_KEY_2).")
+    raise ValueError("Clé API secondaire manquante (ZERION_API_KEY_2)")
 
-# Système de rotation des clés API
 API_KEYS = [API_KEY_1, API_KEY_2]
 api_key_index = 0
 
+TRADE_OPS = {'trade', 'swap', 'execute', 'contract_interaction'}
+
+
 def get_current_api_key():
-    """Retourne la clé API actuellement utilisée"""
-    global api_key_index
+    """Retourne la clé API active."""
     return API_KEYS[api_key_index]
+
 
 def rotate_api_key():
-    """Fait tourner vers la clé API suivante"""
+    """Bascule vers la clé API suivante."""
     global api_key_index
     api_key_index = (api_key_index + 1) % len(API_KEYS)
-    print(f"🔄 Rotation vers clé API {api_key_index + 1}")
+    logger.info(f"Rotation vers clé API {api_key_index + 1}")
     return API_KEYS[api_key_index]
 
-# === Répertoires et Base de données ===
-ROOT = Path(__file__).parent.parent.parent
-DB_PATH = ROOT / "data" / "db" / "wit_database.db"
 
-# === Fonctions SQL pour récupérer les wallets avec changements ===
 def get_wallets_with_recent_changes(hours=24):
-    """Récupère les wallets avec changements récents depuis la BDD"""
+    """Récupère les wallets ayant des changements récents."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        
-        # Récupérer les wallets avec changements dans les dernières X heures
-        query = """
-            SELECT DISTINCT wpc.wallet_address, COUNT(*) as change_count
-            FROM wallet_position_changes wpc
-            WHERE wpc.detected_at >= datetime('now', '-{} hours')
-            GROUP BY wpc.wallet_address
-            ORDER BY change_count DESC
-        """.format(hours)
-        
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-        
+        with sqlite3.connect(DB_PATH) as conn:
+            df = pd.read_sql_query("""
+                SELECT DISTINCT wpc.wallet_address, COUNT(*) as change_count
+                FROM wallet_position_changes wpc
+                WHERE wpc.detected_at >= datetime('now', '-{} hours')
+                GROUP BY wpc.wallet_address
+                ORDER BY change_count DESC
+            """.format(hours), conn)
         wallets = df['wallet_address'].tolist()
-        
-        print(f"📊 {len(wallets)} wallets avec changements dans les {hours}h dernières")
-        if not df.empty:
-            total_changes = df['change_count'].sum()
-            print(f"🔄 {total_changes} changements détectés au total")
-        
+        logger.info(f"{len(wallets)} wallets avec changements ({hours}h) — {df['change_count'].sum() if not df.empty else 0} changements")
         return wallets
-        
     except Exception as e:
-        print(f"❌ Erreur récupération wallets avec changements: {e}")
+        logger.error(f"Erreur récupération wallets: {e}")
         return []
 
-# Fonctions de snapshot supprimées - plus besoin avec la nouvelle logique
 
-def get_tokens_for_wallet_from_db(wallet_address):
-    """Récupère les tokens d'un wallet depuis la BDD (UNIQUEMENT les tokens en portefeuille actuel)"""
+def _get_known_hashes(wallet_address, fungible_id):
+    """Retourne les hashes déjà stockés pour un wallet+token."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        
-        # Utiliser la table tokens avec in_portfolio=1 pour les positions actuelles
-        query = """
-            SELECT t.symbol as token, t.contract_address, t.fungible_id, 
-                   t.current_amount as amount, t.current_usd_value as usd_value, 
-                   t.current_price_per_token as price_per_token
-            FROM tokens t
-            WHERE t.wallet_address = ?
-            AND t.in_portfolio = 1
-            AND t.current_usd_value >= 500
-            ORDER BY t.current_usd_value DESC
-        """
-        
-        df = pd.read_sql_query(query, conn, params=[wallet_address])
-        conn.close()
-        
-        tokens_data = df.to_dict('records')
-        
-        print(f"    💰 {len(tokens_data)} tokens EN PORTEFEUILLE trouvés pour {wallet_address}")
-        return tokens_data
-        
-    except Exception as e:
-        print(f"    ❌ Erreur récupération tokens BDD {wallet_address}: {e}")
-        return []
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT hash FROM transaction_history WHERE wallet_address = ? AND fungible_id = ?",
+                (wallet_address, fungible_id)
+            )
+            return {row[0] for row in cursor.fetchall()}
+    except Exception:
+        return set()
 
-# Fonctions de transactions générales supprimées - plus besoin avec la nouvelle logique
 
-# === Fonctions de récupération de l'historique par token ===
-
-def get_token_transaction_history_zerion_full(wallet_address, fungible_id, retries=3):
-    """Récupération complète sans cache (fonction originale renommée)"""
-    
-    headers = {
-        "accept": "application/json",
-        "authorization": f"Basic {get_current_api_key()}"
-    }
-    
-    all_transactions = []
+def get_token_transaction_history_zerion_full(wallet_address, fungible_id, retries=None):
+    """Récupère l'historique complet Zerion d'un token."""
+    retries = _TL["TX_RETRIES"] if retries is None else retries
+    known_hashes = _get_known_hashes(wallet_address, fungible_id)
+    headers = {"accept": "application/json", "authorization": f"Basic {get_current_api_key()}"}
+    all_transactions, seen_hashes = [], set()
     page_cursor = None
-    page_count = 0
-    max_pages = 25 # Limite de sécurité
-    
-    seen_transaction_hashes = set()
-    should_stop_pagination = False
-    
-    while page_count < max_pages and not should_stop_pagination:
-        # Construire l'URL avec pagination
-        url = f"https://api.zerion.io/v1/wallets/{wallet_address}/transactions/?filter[fungible_ids]={fungible_id}&currency=usd&page[size]=100"
+
+    while True:
+        url = f"https://api.zerion.io/v1/wallets/{wallet_address}/transactions/?filter[fungible_ids]={fungible_id}&currency=usd&page[size]={_TL['TX_PAGE_SIZE']}"
         if page_cursor:
             url += f"&page[after]={page_cursor}"
-        
+
         for attempt in range(retries):
             try:
-                response = requests.get(url, headers=headers, timeout=15)
+                response = requests.get(url, headers=headers, timeout=_TL["TX_HTTP_TIMEOUT_SECONDS"])
                 response.raise_for_status()
-                
                 data = response.json()
                 transactions = data.get("data", [])
-                page_count += 1
-                
-                # Si page vide, on s'arrête (fin des données)
+
                 if not transactions:
-                    print(f"      📄 Page {page_count}: vide - fin des données (total: {len(all_transactions)})")
-                    should_stop_pagination = True
-                    break
-                
-                # Vérifier les transactions dupliquées
-                new_transactions = []
-                duplicates_count = 0
-                
-                for tx in transactions:
-                    tx_hash = tx.get("attributes", {}).get("hash", "")
-                    if tx_hash and tx_hash not in seen_transaction_hashes:
-                        seen_transaction_hashes.add(tx_hash)
-                        new_transactions.append(tx)
-                    else:
-                        duplicates_count += 1
-                
-                # Si toutes les transactions sont des doublons, arrêter la pagination
-                if duplicates_count == len(transactions) and len(transactions) > 0:
-                    print(f"      📄 Page {page_count}: {duplicates_count} doublons détectés - fin de pagination (total: {len(all_transactions)})")
-                    should_stop_pagination = True
-                    break  # Sortir de la boucle retry
-                
-                # Si on arrive ici et qu'on n'a pas de nouvelles transactions, sortir aussi
-                if not new_transactions:
-                    print(f"      📄 Page {page_count}: aucune nouvelle transaction - fin de pagination")
-                    should_stop_pagination = True
-                    break  # Sortir de la boucle retry
-                
-                all_transactions.extend(new_transactions)
-                if new_transactions:
-                    print(f"      📄 Page {page_count}: +{len(new_transactions)} nouvelles transactions (total: {len(all_transactions)})")
-                else:
-                    print(f"      📄 Page {page_count}: aucune nouvelle transaction - fin de pagination")
-                    should_stop_pagination = True
-                    break
-                
-                # Vérifier s'il y a une page suivante dans les métadonnées
-                links = data.get("links", {})
-                next_url = links.get("next")
-                
+                    return all_transactions
+
+                new_txs = [tx for tx in transactions if tx.get("attributes", {}).get("hash", "") not in seen_hashes]
+                if not new_txs:
+                    return all_transactions
+
+                if known_hashes:
+                    truly_new = [tx for tx in new_txs if tx.get("attributes", {}).get("hash", "") not in known_hashes]
+                    if len(truly_new) < len(new_txs):
+                        all_transactions.extend(truly_new)
+                        return all_transactions
+                    new_txs = truly_new
+
+                seen_hashes.update(tx.get("attributes", {}).get("hash", "") for tx in new_txs)
+                all_transactions.extend(new_txs)
+
+                next_url = data.get("links", {}).get("next")
                 if not next_url:
-                    # Pas de page suivante dans les métadonnées = fin
-                    print(f"      ✅ Fin de pagination - passage au token suivant")
-                    should_stop_pagination = True
-                    break
-                
-                # Extraire le cursor (format URL encodé)
+                    return all_transactions
+
                 if "page%5Bafter%5D=" in next_url:
                     page_cursor = next_url.split("page%5Bafter%5D=")[1].split("&")[0]
                 elif "page[after]=" in next_url:
                     page_cursor = next_url.split("page[after]=")[1].split("&")[0]
                 else:
-                    print(f"      ⚠️ Format cursor non reconnu, arrêt pagination")
-                    should_stop_pagination = True
-                    break
-                
-                # Délai entre les pages pour respecter rate limit
-                time.sleep(2.0)  # Augmenté à 2s pour éviter rate limits
+                    return all_transactions
+
+                time.sleep(_TL["TX_PAGE_DELAY_SECONDS"])
                 break
-                
+
             except Exception as e:
                 if attempt < retries - 1:
-                    print(f"      ⚠️ Retry page {page_count + 1}, tentative {attempt + 1}/{retries}")
-                    time.sleep(2)
+                    time.sleep(_TL["TX_RETRY_DELAY_SECONDS"])
                 else:
-                    error_msg = str(e)
-                    if "429" in error_msg or "rate limit" in error_msg.lower() or "too many requests" in error_msg.lower():
-                        print(f"      🚧 Rate limit détecté pour pagination {wallet_address}, rotation clé API...")
+                    if "429" in str(e) or "rate limit" in str(e).lower():
                         rotate_api_key()
-                        time.sleep(5)
-                        # Retry avec la nouvelle clé API
-                        print(f"      🔄 Retry transactions avec nouvelle clé pour {wallet_address}")
+                        time.sleep(_TL["TX_RATE_LIMIT_SLEEP_SECONDS"])
                         return get_token_transaction_history_zerion_full(wallet_address, fungible_id, retries)
-                    else:
-                        print(f"      ❌ Erreur pagination après {retries} tentatives: {e}")
+                    logger.error(f"Erreur pagination: {e}")
                     return []
-        else:
-            # Si on arrive ici, toutes les tentatives ont échoué
-            break
-    
-    if not all_transactions:
-        return []
-    
-    print(f"✅ {len(all_transactions)} transactions récupérées sur {page_count} pages")
-    
-    return all_transactions
 
-# === Fonction pour récupérer l'historique par token pour les wallets avec changements ===
-def replace_complete_token_history(wallet_address, session_id, tokens_to_track):
-    """Remplace complètement l'historique des tokens avec changements - APPROCHE SIMPLE"""
-    
-    print(f"    🔄 Remplacement complet historique pour {len(tokens_to_track)} tokens...")
-    
-    total_transactions_replaced = 0
-    
-    for token_data in tokens_to_track:
-        token_symbol = token_data['token']
-        fungible_id = token_data.get('fungible_id', '')
-        contract_address = token_data.get('contract_address', '')
-        
-        if not fungible_id:
-            print(f"        ⚠️ Pas de fungible_id pour {token_symbol}, skip")
-            continue
-        
-        print(f"        🔄 {token_symbol} - Remplacement complet de l'historique...")
-        
-        # 1. Supprimer TOUT l'ancien historique de ce token pour ce wallet
-        old_count = delete_token_history(wallet_address, token_symbol)
-        if old_count > 0:
-            print(f"            🗑️ {old_count} anciennes transactions supprimées")
-        
-        # 2. Récupérer TOUT le nouvel historique depuis Zerion
-        raw_transactions = get_token_transaction_history_zerion_full(wallet_address, fungible_id)
-        
-        if raw_transactions:
-            # 3. Analyser et stocker TOUT le nouvel historique (pas de filtre)
-            new_tx_count = analyze_and_store_complete_transactions(
-                session_id, wallet_address, token_symbol, fungible_id, 
-                contract_address, raw_transactions
-            )
-            
-            total_transactions_replaced += new_tx_count
-            
-            print(f"        ✅ {new_tx_count} transactions complètes ajoutées pour {token_symbol}")
-            
-            # 4. Nettoyer immédiatement le changement traité
-            clean_processed_change(wallet_address, token_symbol)
-            
-        else:
-            print(f"        ❌ Aucune transaction récupérée pour {token_symbol}")
-            # Nettoyer quand même le changement pour éviter les re-tentatives
-            clean_processed_change(wallet_address, token_symbol)
-        
-        # Pause pour éviter rate limiting
-        time.sleep(1.5)
-    
-    print(f"    📊 Total: {total_transactions_replaced} transactions remplacées dans transaction_history")
-    return total_transactions_replaced
 
-def delete_token_history(wallet_address, token_symbol):
-    """Supprime complètement l'historique d'un token pour un wallet"""
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        cursor = conn.cursor()
-        
-        # Compter d'abord combien on va supprimer
-        cursor.execute("""
-            SELECT COUNT(*) FROM transaction_history 
-            WHERE wallet_address = ? AND symbol = ?
-        """, (wallet_address, token_symbol))
-        
-        count = cursor.fetchone()[0]
-        
-        # Supprimer tout l'historique de ce token
-        cursor.execute("""
-            DELETE FROM transaction_history 
-            WHERE wallet_address = ? AND symbol = ?
-        """, (wallet_address, token_symbol))
-        
-        conn.commit()
-        conn.close()
-        
-        return count
-        
-    except Exception as e:
-        print(f"        ❌ Erreur suppression historique {token_symbol}: {e}")
-        if conn:
-            conn.rollback()
-            conn.close()
-        return 0
-
-def analyze_and_store_complete_transactions(session_id, wallet_address, token_symbol, fungible_id, 
-                                          contract_address, raw_transactions):
-    """Analyse et stocke TOUTES les transactions (pas de filtre incrémental)"""
-    
-    if not raw_transactions:
-        return 0
-    
-    # Analyser et formater TOUTES les transactions
-    formatted_transactions = []
-    
+def _parse_token_transactions(raw_transactions, fungible_id, token_symbol):
+    """Parse les transactions Zerion vers le format DB."""
+    formatted = []
     for tx in raw_transactions:
         attrs = tx.get("attributes", {})
-        hash_tx = attrs.get("hash", "")
-        date = attrs.get("mined_at", "")
         operation_type = attrs.get("operation_type", "")
-        
-        # Analyser les transfers pour ce token spécifique
-        transfers = attrs.get("transfers", [])
-        
-        target_token_in = 0
-        target_token_out = 0
-        target_value_in = 0
-        target_value_out = 0
-        recipient_address = None
-        sender_address = None
+        qty_in, qty_out, val_in, val_out = 0, 0, 0, 0
+        recipient_address = sender_address = None
 
-        for transfer in transfers:
-            fungible_info = transfer.get("fungible_info", {})
-            token_id = fungible_info.get("id", "")
+        for transfer in attrs.get("transfers", []):
+            finfo = transfer.get("fungible_info", {})
             direction = transfer.get("direction", "")
-
-            # Ignorer les transferts "self" (wallet s'envoie à lui-même)
-            if direction == "self":
+            if direction == "self" or finfo.get("id", "") != fungible_id:
                 continue
 
-            # Si c'est le token qu'on analyse
-            if token_id == fungible_id:
-                quantity_data = transfer.get("quantity", {})
-                amount = float(quantity_data.get("numeric", 0)) if isinstance(quantity_data, dict) else 0
-                transfer_value = float(transfer.get("value", 0) or 0)
+            qty_data = transfer.get("quantity", {})
+            amount = float(qty_data.get("numeric", 0) if isinstance(qty_data, dict) else 0)
+            val = float(transfer.get("value", 0) or 0)
 
-                # Capturer sender et recipient pour les migrations
-                if direction == "out":
-                    recipient_address = transfer.get("recipient")
-                elif direction == "in":
-                    sender_address = transfer.get("sender")
+            if direction == "out":
+                qty_out += amount
+                val_out += val
+                recipient_address = transfer.get("recipient")
+            elif direction == "in":
+                qty_in += amount
+                val_in += val
+                sender_address = transfer.get("sender")
 
-                if direction == "in":
-                    target_token_in += amount
-                    target_value_in += transfer_value
-                elif direction == "out":
-                    target_token_out += amount
-                    target_value_out += transfer_value
-        
-        # Déterminer l'action et la quantité nette
-        if target_token_in > 0 and target_token_out == 0:
-            action_type = "buy"
-            quantity = target_token_in
-            swap_description = f"Achat: +{target_token_in:.6f} {token_symbol}"
-        elif target_token_out > 0 and target_token_in == 0:
-            action_type = "sell"
-            quantity = -target_token_out
-            swap_description = f"Vente: -{target_token_out:.6f} {token_symbol}"
-        elif target_token_in > 0 and target_token_out > 0:
-            net = target_token_in - target_token_out
-            if net > 0:
-                action_type = "buy"
-                quantity = net
-                swap_description = f"Achat net: +{net:.6f} {token_symbol}"
-            else:
-                action_type = "sell"
-                quantity = net
-                swap_description = f"Vente net: {net:.6f} {token_symbol}"
+        if qty_in > 0 and qty_out == 0:
+            action_type = "buy" if operation_type in TRADE_OPS else "receive"
+            quantity = qty_in
+            desc = f"{'Achat' if action_type == 'buy' else 'Réception'}: +{qty_in:.6f} {token_symbol}"
+        elif qty_out > 0 and qty_in == 0:
+            action_type = "sell" if operation_type in TRADE_OPS else "send"
+            quantity = -qty_out
+            desc = f"{'Vente' if action_type == 'sell' else 'Envoi'}: -{qty_out:.6f} {token_symbol}"
+        elif qty_in > 0 and qty_out > 0:
+            net = qty_in - qty_out
+            action_type = "buy" if net > 0 else "sell"
+            quantity = net
+            desc = f"{'Achat' if net > 0 else 'Vente'} net: {net:+.6f} {token_symbol}"
         else:
-            continue  # Pas de mouvement sur ce token
-        
-        # Calculer la valeur totale et le prix
-        total_value = target_value_in + target_value_out
-        if operation_type == "trade" and target_value_in > 0 and target_value_out > 0:
-            # Pour les swaps, diviser par 2 pour éviter double comptage
-            balance_ratio = min(target_value_in, target_value_out) / max(target_value_in, target_value_out)
-            if balance_ratio >= 0.8:
-                total_value = total_value / 2
-        
-        price_per_token = total_value / abs(quantity) if quantity != 0 else 0
-        
-        # Calculer direction basée sur quantity
-        direction = "in" if quantity > 0 else "out"
-        
-        formatted_transactions.append({
-            "hash": hash_tx,
-            "date": date,
+            continue
+
+        total_value = val_in + val_out
+        if operation_type == "trade" and val_in > 0 and val_out > 0:
+            ratio = min(val_in, val_out) / max(val_in, val_out)
+            if ratio >= _TL["TX_SWAP_RATIO_THRESHOLD"]:
+                total_value /= 2
+
+        formatted.append({
+            "hash": attrs.get("hash", ""),
+            "date": attrs.get("mined_at", ""),
             "operation_type": operation_type,
             "action_type": action_type,
-            "swap_description": swap_description,
+            "swap_description": desc,
             "quantity": quantity,
-            "price_per_token": price_per_token,
+            "price_per_token": total_value / abs(quantity) if quantity != 0 else 0,
             "total_value_usd": total_value,
-            "direction": direction,
+            "direction": "in" if quantity > 0 else "out",
             "recipient_address": recipient_address,
             "sender_address": sender_address
         })
-    
-    # Stocker TOUT dans transaction_history
-    if formatted_transactions:
-        try:
-            conn = sqlite3.connect(DB_PATH, timeout=30.0)
-            conn.execute("PRAGMA journal_mode=WAL")
-            cursor = conn.cursor()
-            
-            for tx in formatted_transactions:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO transaction_history (
-                        wallet_address, fungible_id, symbol, date, hash,
-                        operation_type, action_type, swap_description, contract_address,
-                        quantity, price_per_token, total_value_usd, direction,
-                        recipient_address, sender_address
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    wallet_address, fungible_id, token_symbol, tx['date'], tx['hash'],
-                    tx['operation_type'], tx['action_type'], tx['swap_description'],
-                    contract_address, tx['quantity'], tx['price_per_token'], tx['total_value_usd'], tx['direction'],
-                    tx.get('recipient_address'), tx.get('sender_address')
-                ))
-            
-            conn.commit()
-            conn.close()
-            
-            return len(formatted_transactions)
-            
-        except Exception as e:
-            print(f"        ❌ Erreur stockage historique complet {token_symbol}: {e}")
-            if conn:
-                conn.rollback()
-                conn.close()
-            return 0
-    
-    return 0
+    return formatted
 
-def clean_processed_change(wallet_address, token_symbol):
-    """Nettoie immédiatement un changement traité pour éviter les re-traitements"""
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        cursor = conn.cursor()
-        
-        # Supprimer tous les changements de ce token pour ce wallet
-        cursor.execute("""
-            DELETE FROM wallet_position_changes 
-            WHERE wallet_address = ? AND symbol = ?
-        """, (wallet_address, token_symbol))
-        
-        deleted_count = cursor.rowcount
-        if deleted_count > 0:
-            print(f"            🧹 {deleted_count} changements nettoyés pour {token_symbol}")
-        
-        conn.commit()
-        conn.close()
-        
-    except Exception as e:
-        print(f"            ⚠️ Erreur nettoyage changement {token_symbol}: {e}")
-        if conn:
-            conn.rollback()
-            conn.close()
 
-def get_last_transaction_snapshot_per_token(wallet_address, tokens_to_check):
-    """Récupère le dernier snapshot de transaction pour chaque token d'un wallet"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        
-        snapshots = {}
-        
-        for token_data in tokens_to_check:
-            token_symbol = token_data['token']
-            fungible_id = token_data.get('fungible_id', '')
-            
-            # Récupérer la dernière transaction de ce token pour ce wallet
-            query = """
-                SELECT hash, date, quantity, total_value_usd
-                FROM transaction_history 
-                WHERE wallet_address = ? AND symbol = ?
-                ORDER BY date DESC 
-                LIMIT 1
-            """
-            
-            cursor = conn.cursor()
-            cursor.execute(query, (wallet_address, token_symbol))
-            result = cursor.fetchone()
-            
-            if result:
-                snapshots[token_symbol] = {
-                    'last_hash': result[0],
-                    'last_date': result[1],
-                    'last_quantity': result[2],
-                    'last_value': result[3],
-                    'fungible_id': fungible_id
-                }
-            else:
-                # Pas d'historique pour ce token
-                snapshots[token_symbol] = {
-                    'last_hash': None,
-                    'last_date': None,
-                    'last_quantity': 0,
-                    'last_value': 0,
-                    'fungible_id': fungible_id,
-                    'is_new_token': True
-                }
-        
-        conn.close()
-        return snapshots
-        
-    except Exception as e:
-        print(f"        ❌ Erreur récupération snapshots: {e}")
-        return {}
-
-def analyze_and_store_new_transactions(session_id, wallet_address, token_symbol, fungible_id, 
-                                     contract_address, raw_transactions, last_known_hash=None):
-    """Analyse les transactions brutes et stocke seulement les nouvelles dans transaction_history"""
-    
+def analyze_and_store_complete_transactions(session_id, wallet_address, token_symbol, fungible_id,
+                                            contract_address, raw_transactions):
+    """Formate et stocke toutes les transactions d'un token."""
     if not raw_transactions:
         return 0
-    
-    # Filtrer les nouvelles transactions si on a un hash de référence
-    new_transactions = []
-    
-    if last_known_hash:
-        # Chercher les transactions depuis le dernier hash connu
-        for tx in raw_transactions:
-            tx_hash = tx.get("attributes", {}).get("hash", "")
-            if tx_hash == last_known_hash:
-                break  # On a atteint la dernière transaction connue
-            new_transactions.append(tx)
-    else:
-        # Pas de baseline, prendre toutes les transactions (première fois)
-        new_transactions = raw_transactions
-    
-    if not new_transactions:
+
+    formatted = _parse_token_transactions(raw_transactions, fungible_id, token_symbol)
+    if not formatted:
         return 0
-    
-    # Analyser et formater les transactions
-    formatted_transactions = []
-    
-    for tx in new_transactions:
-        attrs = tx.get("attributes", {})
-        hash_tx = attrs.get("hash", "")
-        date = attrs.get("mined_at", "")
-        operation_type = attrs.get("operation_type", "")
-        
-        # Analyser les transfers pour ce token spécifique
-        transfers = attrs.get("transfers", [])
-        
-        target_token_in = 0
-        target_token_out = 0
-        target_value_in = 0
-        target_value_out = 0
-        recipient_address = None
-        sender_address = None
 
-        for transfer in transfers:
-            fungible_info = transfer.get("fungible_info", {})
-            token_id = fungible_info.get("id", "")
-            direction = transfer.get("direction", "")
-
-            # Ignorer les transferts "self" (wallet s'envoie à lui-même)
-            if direction == "self":
-                continue
-
-            # Si c'est le token qu'on analyse
-            if token_id == fungible_id:
-                quantity_data = transfer.get("quantity", {})
-                amount = float(quantity_data.get("numeric", 0)) if isinstance(quantity_data, dict) else 0
-                transfer_value = float(transfer.get("value", 0) or 0)
-
-                # Capturer sender et recipient pour les migrations
-                if direction == "out":
-                    recipient_address = transfer.get("recipient")
-                elif direction == "in":
-                    sender_address = transfer.get("sender")
-
-                if direction == "in":
-                    target_token_in += amount
-                    target_value_in += transfer_value
-                elif direction == "out":
-                    target_token_out += amount
-                    target_value_out += transfer_value
-        
-        # Déterminer l'action et la quantité nette
-        if target_token_in > 0 and target_token_out == 0:
-            action_type = "buy"
-            quantity = target_token_in
-            swap_description = f"Achat: +{target_token_in:.6f} {token_symbol}"
-        elif target_token_out > 0 and target_token_in == 0:
-            action_type = "sell"
-            quantity = -target_token_out
-            swap_description = f"Vente: -{target_token_out:.6f} {token_symbol}"
-        elif target_token_in > 0 and target_token_out > 0:
-            net = target_token_in - target_token_out
-            if net > 0:
-                action_type = "buy"
-                quantity = net
-                swap_description = f"Achat net: +{net:.6f} {token_symbol}"
-            else:
-                action_type = "sell"
-                quantity = net
-                swap_description = f"Vente net: {net:.6f} {token_symbol}"
-        else:
-            continue  # Pas de mouvement sur ce token
-        
-        # Calculer la valeur totale et le prix
-        total_value = target_value_in + target_value_out
-        if operation_type == "trade" and target_value_in > 0 and target_value_out > 0:
-            # Pour les swaps, diviser par 2 pour éviter double comptage
-            balance_ratio = min(target_value_in, target_value_out) / max(target_value_in, target_value_out)
-            if balance_ratio >= 0.8:
-                total_value = total_value / 2
-        
-        price_per_token = total_value / abs(quantity) if quantity != 0 else 0
-        
-        # Calculer direction basée sur quantity
-        direction = "in" if quantity > 0 else "out"
-        
-        formatted_transactions.append({
-            "hash": hash_tx,
-            "date": date,
-            "operation_type": operation_type,
-            "action_type": action_type,
-            "swap_description": swap_description,
-            "quantity": quantity,
-            "price_per_token": price_per_token,
-            "total_value_usd": total_value,
-            "direction": direction,
-            "recipient_address": recipient_address,
-            "sender_address": sender_address
-        })
-    
-    # Stocker dans transaction_history
-    if formatted_transactions:
-        try:
-            conn = sqlite3.connect(DB_PATH, timeout=30.0)
-            conn.execute("PRAGMA journal_mode=WAL")
-            cursor = conn.cursor()
-            
-            for tx in formatted_transactions:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO transaction_history (
-                        wallet_address, fungible_id, symbol, date, hash,
-                        operation_type, action_type, swap_description, contract_address,
-                        quantity, price_per_token, total_value_usd
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    wallet_address, fungible_id, token_symbol, tx['date'], tx['hash'],
-                    tx['operation_type'], tx['action_type'], tx['swap_description'], 
-                    contract_address, tx['quantity'], tx['price_per_token'], tx['total_value_usd']
-                ))
-            
-            conn.commit()
-            conn.close()
-            
-            print(f"        💾 {len(formatted_transactions)} nouvelles transactions stockées pour {token_symbol}")
-            return len(formatted_transactions)
-            
-        except Exception as e:
-            print(f"        ❌ Erreur stockage transactions {token_symbol}: {e}")
-            if conn:
-                conn.rollback()
-                conn.close()
-            return 0
-    
-    return 0
-
-def run_optimized_transaction_tracking(min_usd=500, hours_lookback=24):
-    """Extraction optimisée : transactions SEULEMENT pour wallets avec changements récents"""
-    
-    session_id = str(uuid.uuid4())[:8]
-    
-    print(f"\n🚀 === TRACKING TRANSACTIONS OPTIMISÉ - Session {session_id} ===")
-    print(f"🎯 STRATÉGIE: Récupérer transactions SEULEMENT pour wallets avec changements")
-    print(f"⏰ Période analysée: {hours_lookback}h dernières")
-    print(f"💰 Seuil minimum: ${min_usd}")
-    print(f"🗄️ Base de données: {DB_PATH}")
-    
-    # 1. Récupérer les wallets avec changements récents depuis la BDD
-    wallets_with_changes = get_wallets_with_recent_changes(hours_lookback)
-    
-    if not wallets_with_changes:
-        print("⚠️ Aucun wallet avec changements récents détecté")
-        return
-    
-    print(f"🎯 {len(wallets_with_changes)} wallets avec changements à traiter")
-    
-    total_new_transactions = 0
-    total_api_calls_saved = 0
-    
-    for i, wallet_address in enumerate(wallets_with_changes, 1):
-        print(f"\n=== [{i}/{len(wallets_with_changes)}] {wallet_address} ===")
-        
-        # 2. Plus besoin de snapshot - on utilise directement les changements détectés
-        
-        # 3. Récupérer les changements récents pour ce wallet
-        conn = sqlite3.connect(DB_PATH)
-        changes_query = """
-            SELECT wpc.symbol, wpc.change_type, wpc.amount_change, wpc.detected_at
-            FROM wallet_position_changes wpc
-            WHERE wpc.wallet_address = ?
-            AND wpc.detected_at >= datetime('now', '-{} hours')
-            ORDER BY wpc.detected_at DESC
-        """.format(hours_lookback)
-        
-        changes_df = pd.read_sql_query(changes_query, conn, params=[wallet_address])
-        conn.close()
-        
-        if changes_df.empty:
-            print(f"    ⚠️ Aucun changement récent trouvé, skip")
-            continue
-        
-        print(f"    🔄 {len(changes_df)} changements récents détectés:")
-        for _, change in changes_df.head(3).iterrows():
-            print(f"        • {change['symbol']}: {change['change_type']} ({change['detected_at'][:16]})")
-        
-        # 4. Récupérer les tokens affectés par les changements
-        tokens_with_changes = changes_df['symbol'].unique().tolist()
-        print(f"    🎯 Tokens avec changements: {', '.join(tokens_with_changes)}")
-        
-        # 5. Récupérer les infos des tokens depuis wallet_position_changes (plus fiable pour nouveaux tokens)
-        tokens_to_track = []
-        if tokens_with_changes:
-            conn_temp = sqlite3.connect(DB_PATH)
-            placeholders = ','.join(['?' for _ in tokens_with_changes])
-            query = f"""
-                SELECT DISTINCT symbol as token, contract_address, fungible_id
-                FROM wallet_position_changes 
-                WHERE wallet_address = ? AND symbol IN ({placeholders})
-                AND fungible_id IS NOT NULL AND fungible_id != ''
-                ORDER BY detected_at DESC
-            """
-            params = [wallet_address] + tokens_with_changes
-            df = pd.read_sql_query(query, conn_temp, params=params)
-            conn_temp.close()
-            
-            tokens_to_track = df.to_dict('records')
-        
-        print(f"    💰 {len(tokens_to_track)} tokens avec fungible_id valide depuis wallet_position_changes")
-        
-        if tokens_to_track:
-            print(f"    📊 Remplacement historique complet pour {len(tokens_to_track)} tokens...")
-            
-            # 6. Remplacer complètement l'historique des tokens modifiés
-            tx_replaced = replace_complete_token_history(wallet_address, session_id, tokens_to_track)
-            
-            if tx_replaced > 0:
-                print(f"    ✅ {tx_replaced} transactions remplacées dans transaction_history")
-                total_new_transactions += tx_replaced
-            else:
-                print(f"    ⚠️ Aucune transaction récupérée pour les tokens modifiés")
-        
-        # 7. Historique complet remplacé - pas besoin de nouvelles transactions générales
-        print(f"    ✅ Historique complet traité pour les tokens modifiés")
-        
-        # Délai pour respecter rate limiting
-        time.sleep(2)
-    
-    # Résumé final
-    print(f"\n🎉 === TRACKING TRANSACTIONS TERMINÉ ===")
-    print(f"🎯 Wallets traités: {len(wallets_with_changes)}")
-    print(f"🆕 Nouvelles transactions: {total_new_transactions}")
-    
-    print(f"🗄️ Session: {session_id}")
-    print(f"✅ Données mises à jour dans la table transaction_history")
-    
-    # Nettoyage final: vider complètement la table wallet_position_changes
-    print(f"\n🧹 === NETTOYAGE FINAL ===")
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
-        
-        # Supprimer complètement le contenu de la table
-        cursor.execute("DELETE FROM wallet_position_changes")
-        
-        deleted_count = cursor.rowcount
+        for tx in formatted:
+            cursor.execute("""
+                INSERT OR IGNORE INTO transaction_history (
+                    wallet_address, fungible_id, symbol, date, hash,
+                    operation_type, action_type, swap_description, contract_address,
+                    quantity, price_per_token, total_value_usd, direction,
+                    recipient_address, sender_address
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                wallet_address, fungible_id, token_symbol, tx['date'], tx['hash'],
+                tx['operation_type'], tx['action_type'], tx['swap_description'],
+                contract_address, tx['quantity'], tx['price_per_token'], tx['total_value_usd'],
+                tx['direction'], tx.get('recipient_address'), tx.get('sender_address')
+            ))
         conn.commit()
-        conn.close()
-        
-        print(f"🗑️ Table wallet_position_changes complètement vidée ({deleted_count} entrées supprimées)")
-        
+        return len(formatted)
     except Exception as e:
-        print(f"⚠️ Erreur nettoyage final: {e}")
+        logger.error(f"Erreur stockage {token_symbol}: {e}")
         if conn:
             conn.rollback()
+        return 0
+    finally:
+        if conn:
             conn.close()
-    
+
+
+def clean_processed_change(wallet_address, token_symbol):
+    """Supprime les changements traités de wallet_position_changes."""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM wallet_position_changes WHERE wallet_address = ? AND symbol = ?",
+                       (wallet_address, token_symbol))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"Erreur nettoyage {token_symbol}: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
+
+
+def replace_complete_token_history(wallet_address, session_id, tokens_to_track):
+    """Ajoute les nouvelles transactions pour chaque token."""
+    total = 0
+    for token_data in tokens_to_track:
+        symbol = token_data['token']
+        fungible_id = token_data.get('fungible_id', '')
+        if not fungible_id:
+            continue
+
+        raw = get_token_transaction_history_zerion_full(wallet_address, fungible_id)
+        if raw:
+            count = analyze_and_store_complete_transactions(
+                session_id, wallet_address, symbol, fungible_id,
+                token_data.get('contract_address', ''), raw
+            )
+            total += count
+            logger.info(f"{symbol}: {count} transactions ajoutées")
+        else:
+            logger.warning(f"{symbol}: aucune transaction récupérée")
+
+        clean_processed_change(wallet_address, symbol)
+        time.sleep(_TL["TX_TOKEN_DELAY_SECONDS"])
+
+    logger.info(f"{total} transactions au total pour {wallet_address[:12]}...")
+    return total
+
+
+def run_optimized_transaction_tracking(min_usd=500, hours_lookback=24):
+    """Mise à jour des transactions pour wallets avec changements récents."""
+    session_id = str(uuid.uuid4())[:8]
+    logger.info(f"TRACKING TRANSACTIONS — Session {session_id} ({hours_lookback}h, min ${min_usd})")
+
+    wallets_with_changes = get_wallets_with_recent_changes(hours_lookback)
+    if not wallets_with_changes:
+        logger.warning("Aucun wallet avec changements récents")
+        return True
+
+    total_new_transactions = 0
+
+    for i, wallet_address in enumerate(wallets_with_changes, 1):
+        logger.info(f"[{i}/{len(wallets_with_changes)}] {wallet_address[:12]}...")
+
+        with sqlite3.connect(DB_PATH) as conn:
+            changes_df = pd.read_sql_query("""
+                SELECT DISTINCT symbol as token, contract_address, fungible_id
+                FROM wallet_position_changes
+                WHERE wallet_address = ?
+                AND detected_at >= datetime('now', '-{} hours')
+                AND fungible_id IS NOT NULL AND fungible_id != ''
+                ORDER BY detected_at DESC
+            """.format(hours_lookback), conn, params=[wallet_address])
+
+        if changes_df.empty:
+            logger.warning(f"Aucun changement trouvé pour {wallet_address[:12]}..., skip")
+            continue
+
+        tokens_to_track = changes_df.to_dict('records')
+        logger.info(f"{len(tokens_to_track)} tokens à traiter: {', '.join(t['token'] for t in tokens_to_track)}")
+
+        tx_count = replace_complete_token_history(wallet_address, session_id, tokens_to_track)
+        total_new_transactions += tx_count
+        time.sleep(_TL["TX_WALLET_DELAY_SECONDS"])
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM wallet_position_changes")
+        deleted = cursor.rowcount
+        conn.commit()
+        logger.info(f"wallet_position_changes vidée ({deleted} entrées)")
+    except Exception as e:
+        logger.warning(f"Erreur nettoyage final: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
+
+    logger.info(f"{total_new_transactions} transactions ajoutées pour {len(wallets_with_changes)} wallets")
     return True
 
-# === Lancement direct ===
+
 if __name__ == "__main__":
     run_optimized_transaction_tracking()

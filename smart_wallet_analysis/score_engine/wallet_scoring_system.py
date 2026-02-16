@@ -1,39 +1,24 @@
 #!/usr/bin/env python3
-"""
-SYSTÈME DE SCORING INTELLIGENT DES WALLETS
-Calcule un score composite basé sur :
-- ROI pondéré par investissement
-- Nombre de trades (activité)
-- Taux de réussite (>= 50% = gagnant)
-Classification :
-  - Gagnants : ROI >= 50%
-  - Neutres : -20% <= ROI < 50% (bruit de marché)
-  - Perdants : ROI < -20%
-Filtre les wallets avec < 40% ROI pondéré
-"""
+"""Système de scoring intelligent des wallets."""
 
 import sqlite3
 import math
-from pathlib import Path
 
-# Configuration
-ROOT_DIR = Path(__file__).parent.parent.parent
-DB_PATH = ROOT_DIR / "data" / "db" / "wit_database.db"
+from smart_wallet_analysis.config import DB_PATH, SCORE_ENGINE, PIPELINES, WALLET_BALANCES
+from smart_wallet_analysis.logger import get_logger
+
+logger = get_logger("score_engine.scoring")
+
+_WS = SCORE_ENGINE["WALLET_SCORING"]
+_EXCLUDED = SCORE_ENGINE["EXCLUDED_TOKENS"]
+_EXCLUDED_PLACEHOLDERS = ",".join("?" * len(_EXCLUDED))
+_PL = PIPELINES
+_WB = WALLET_BALANCES
 
 def calculate_wallet_score(wallet_address):
-    """
-    Calcule le score d'un wallet directement depuis token_analytics
-
-    Args:
-        wallet_address: Adresse du wallet
-
-    Returns:
-        dict: Score et métriques détaillées ou None si non qualifié
-    """
-
+    """Calcule le score d'un wallet depuis token_analytics."""
     conn = sqlite3.connect(DB_PATH)
 
-    # Récupérer le portfolio value depuis la table wallets
     portfolio_query = """
         SELECT total_portfolio_value
         FROM wallets
@@ -42,132 +27,85 @@ def calculate_wallet_score(wallet_address):
     portfolio_result = conn.execute(portfolio_query, [wallet_address]).fetchone()
     portfolio_value = portfolio_result[0] if portfolio_result else 0
 
-    # Récupérer TOUS les trades du wallet (sans filtre de palier)
-    query = """
+    query = f"""
         SELECT token_symbol, total_invested, roi_percentage
         FROM token_analytics
         WHERE wallet_address = ?
-        AND token_symbol NOT IN ('USDC', 'USDT', 'DAI', 'USDAI', 'BUSD', 'ETH', 'WETH', 'BTC', 'WBTC', 'BNB')
+        AND token_symbol NOT IN ({_EXCLUDED_PLACEHOLDERS})
         ORDER BY total_invested DESC
     """
 
-    tokens = conn.execute(query, [wallet_address]).fetchall()
+    tokens = conn.execute(query, [wallet_address, *_EXCLUDED]).fetchall()
     conn.close()
 
     if not tokens:
         return None
 
-    # Calculs des métriques de base
     nb_trades = len(tokens)
     total_invested = sum(t[1] for t in tokens)
 
-    # === FILTRES DE CONSISTANCE (ANTI-CHANCE) ===
-
-    # 1. FILTRE: Minimum 5 trades (pas de "one-hit wonder")
-    if nb_trades < 5:
+    if nb_trades < _WS["MIN_TRADES"]:
         return None
 
-    # 2. FILTRE: Au moins 3 trades gagnants (ROI > 50%)
-    gagnants_significatifs = sum(1 for t in tokens if t[2] > 50)
-    if gagnants_significatifs < 3:
+    gagnants_significatifs = sum(1 for t in tokens if t[2] > _WS["ROI_WIN_THRESHOLD"])
+    if gagnants_significatifs < _WS["MIN_SIGNIFICANT_WINS"]:
         return None
 
-    # 3. FILTRE: Détection de concentration du ROI (éviter 1-2 gros trades chanceux)
-    # Calculer la contribution de chaque trade POSITIF au ROI total
-    # On ne considère QUE les trades gagnants pour éviter les biais avec les trades négatifs
     roi_contributions_positive = []
     for t in tokens:
-        if t[2] > 0:  # Seulement les trades avec ROI positif
-            contribution = (t[1] * t[2])  # investissement × ROI
-            roi_contributions_positive.append(contribution)
+        if t[2] > 0:
+            roi_contributions_positive.append(t[1] * t[2])
 
-    # Si moins de 3 trades positifs, déjà bloqué par le filtre 2
-    if len(roi_contributions_positive) >= 3:
-        # Trier par contribution décroissante
+    top_n = _WS["ROI_CONCENTRATION_TOP_N"]
+    if len(roi_contributions_positive) >= top_n:
         roi_contributions_sorted = sorted(roi_contributions_positive, reverse=True)
         total_positive_contribution = sum(roi_contributions_sorted)
 
-        # Si les 3 meilleurs trades représentent > 99% du ROI positif total → REJET (chance)
         if total_positive_contribution > 0:
-            top3_contribution = sum(roi_contributions_sorted[:3])
-            concentration_ratio = top3_contribution / total_positive_contribution
-            if concentration_ratio > 0.99:
-                return None  # Trop concentré = chance, pas skill
+            top_contribution = sum(roi_contributions_sorted[:top_n])
+            concentration_ratio = top_contribution / total_positive_contribution
+            if concentration_ratio > _WS["ROI_CONCENTRATION_MAX_RATIO"]:
+                return None
 
-    # 4. FILTRE: Médiane vs Moyenne du ROI (détecter valeurs extrêmes)
-    # DÉSACTIVÉ: Ce filtre est trop strict pour les memecoins où le style gagnant
-    # consiste justement à avoir beaucoup de petites pertes et quelques gros gains.
-    # Un wallet avec ROI pondéré positif et 3+ gagnants significatifs est valide.
     roi_values = [t[2] for t in tokens]
-    roi_values_sorted = sorted(roi_values)
-    median_roi = roi_values_sorted[len(roi_values_sorted) // 2]
-    mean_roi = sum(roi_values) / len(roi_values)
 
-    # Filtre désactivé - on fait confiance au ROI pondéré et aux autres filtres
-    # if mean_roi > 0 and median_roi > 0:
-    #     if median_roi / mean_roi < 0.30:
-    #         return None
-
-    # ROI pondéré par investissement
     weighted_roi = sum(t[1] * t[2] for t in tokens) / total_invested if total_invested > 0 else 0
 
-    # NOTE: Pas de filtre sur ROI pondéré global ni portfolio value
-    # Le filtrage se fera PAR PALIER dans l'analyse optimal_threshold
-    # Cela permet de capturer les wallets excellents sur certains paliers spécifiques
+    gagnants = sum(1 for t in tokens if t[2] >= _WS["ROI_WIN_THRESHOLD"])
+    perdants = sum(1 for t in tokens if t[2] < _WS["ROI_LOSS_THRESHOLD"])
+    neutres = nb_trades - gagnants - perdants
 
-    # Classification des trades
-    gagnants = sum(1 for t in tokens if t[2] >= 50)     # >= 50% ROI (vraies victoires)
-    perdants = sum(1 for t in tokens if t[2] < -20)     # < -20% ROI (vraies pertes)
-    neutres = nb_trades - gagnants - perdants            # -20% à 50% ROI (bruit de marché)
-
-    # Taux de réussite
     taux_reussite = (gagnants / nb_trades * 100) if nb_trades > 0 else 0
 
-    # NOTE: Pas de filtre sur le taux de réussite global
-    # Le taux de réussite sera évalué PAR PALIER dans l'analyse optimal_threshold
+    roi_score = min(100, max(0, (weighted_roi - _WS["ROI_SCORE_BASE"]) / _WS["ROI_SCORE_DIVISOR"]))
+    activity_score = min(100, max(0, math.log(nb_trades) / math.log(_WS["ACTIVITY_LOG_MAX_TRADES"]) * 100)) if nb_trades > 0 else 0
+    success_score = min(100, max(0, taux_reussite * _WS["SUCCESS_SCORE_MULTIPLIER"]))
 
-    # === CALCUL DU SCORE COMPOSITE ===
-    
-    # 1. Score ROI (0-100 points)
-    # Normalisation: 50% = 0 points, 200% = 50 points, 500%+ = 100 points
-    roi_score = min(100, max(0, (weighted_roi - 50) / 4.5))
-    
-    # 2. Score Activité (0-100 points) 
-    # Normalisation logarithmique: 1 trade = 0, 5 trades = 50, 20+ trades = 100
-    activity_score = min(100, max(0, math.log(nb_trades) / math.log(20) * 100)) if nb_trades > 0 else 0
-    
-    # 3. Score Taux de Réussite (0-100 points)
-    # Normalisation: 0% = 0 points, 25% = 50 points, 50%+ = 100 points
-    success_score = min(100, max(0, taux_reussite * 2))
-    
-    # 4. Bonus Qualité (0-50 points bonus)
-    # Récompense les wallets avec beaucoup de gagnants et peu de perdants
     ratio_gagnants = gagnants / nb_trades if nb_trades > 0 else 0
     ratio_perdants = perdants / nb_trades if nb_trades > 0 else 0
-    quality_bonus = (ratio_gagnants - ratio_perdants) * 50
+    quality_bonus = (ratio_gagnants - ratio_perdants) * _WS["QUALITY_BONUS_MULTIPLIER"]
     quality_bonus = max(0, min(50, quality_bonus))
-    
-    # === SCORE FINAL PONDÉRÉ ===
-    # ROI (40%) + Activité (25%) + Réussite (25%) + Qualité (10%)
+
+    weights = _WS["SCORE_WEIGHTS"]
     final_score = (
-        roi_score * 0.40 +
-        activity_score * 0.25 +
-        success_score * 0.25 +
-        quality_bonus * 0.10
+        roi_score * weights["ROI"] +
+        activity_score * weights["ACTIVITY"] +
+        success_score * weights["SUCCESS"] +
+        quality_bonus * weights["QUALITY"]
     )
-    
-    # Classification du wallet
-    if final_score >= 80:
+
+    thresholds = _WS["CLASS_THRESHOLDS"]
+    if final_score >= thresholds["ELITE"]:
         classification = "ELITE"
-    elif final_score >= 60:
+    elif final_score >= thresholds["EXCELLENT"]:
         classification = "EXCELLENT"
-    elif final_score >= 40:
+    elif final_score >= thresholds["BON"]:
         classification = "BON"
-    elif final_score >= 20:
+    elif final_score >= thresholds["MOYEN"]:
         classification = "MOYEN"
     else:
         classification = "FAIBLE"
-    
+
     return {
         'wallet_address': wallet_address,
         'final_score': round(final_score, 2),
@@ -186,110 +124,78 @@ def calculate_wallet_score(wallet_address):
     }
 
 def score_all_wallets(min_score=0):
-    """
-    Score tous les wallets et les classe par performance
-    
-    Args:
-        min_score: Score minimum pour apparaître dans les résultats
-    
-    Returns:
-        list: Liste des wallets scorés, triés par score décroissant
-    """
-    
-    print(f"🚀 SCORING TOUS LES WALLETS")
-    print("=" * 80)
-    
-    # Récupérer tous les wallets uniques
+    """Score tous les wallets et les classe par performance."""
+    logger.info("SCORING TOUS LES WALLETS")
+
     conn = sqlite3.connect(DB_PATH)
-    query = """
-        SELECT DISTINCT wallet_address
-        FROM token_analytics
-        WHERE token_symbol NOT IN ('USDC', 'USDT', 'DAI', 'USDAI', 'BUSD', 'ETH', 'WETH', 'BTC', 'WBTC', 'BNB')
+    query = f"""
+        SELECT DISTINCT ta.wallet_address
+        FROM token_analytics ta
+        JOIN wallets w ON ta.wallet_address = w.wallet_address
+        WHERE ta.token_symbol NOT IN ({_EXCLUDED_PLACEHOLDERS})
+        AND w.total_portfolio_value >= ?
     """
-    wallets = conn.execute(query).fetchall()
+    wallets = conn.execute(query, list(_EXCLUDED) + [_WB["MIN_WALLET_VALUE_USD"]]).fetchall()
     conn.close()
-    
-    print(f"📊 {len(wallets)} wallets candidats")
-    
-    # Scorer chaque wallet
+
+    logger.info(f"{len(wallets)} wallets candidats")
+
     scored_wallets = []
     qualified_count = 0
-    
+
     for wallet in wallets:
         score_data = calculate_wallet_score(wallet[0])
         if score_data and score_data['final_score'] >= min_score:
             scored_wallets.append(score_data)
             qualified_count += 1
-    
-    # Trier par score décroissant
+
     scored_wallets.sort(key=lambda x: x['final_score'], reverse=True)
-    
-    print(f"✅ {qualified_count} wallets qualifiés (ROI pondéré ≥ 50%)")
-    print(f"📈 Score minimum: {min_score}")
-    
+
+    logger.info(f"{qualified_count} wallets qualifiés | score minimum: {min_score}")
+
     return scored_wallets
 
 def display_top_wallets(scored_wallets, top_n=20):
-    """Affiche le top N des wallets"""
-    
-    print(f"\n🏆 TOP {top_n} WALLETS")
-    print("=" * 120)
-    print(f"{'Rang':<4} {'Wallet':<45} {'Score':<6} {'Class':<9} {'ROI%':<7} {'Trades':<7} {'Réuss%':<7} {'G/P/N':<8}")
-    print("=" * 120)
-    
+    """Affiche le top N des wallets."""
+    logger.info(f"TOP {top_n} WALLETS")
     for i, wallet in enumerate(scored_wallets[:top_n], 1):
         wallet_short = wallet['wallet_address'][:10] + "..." + wallet['wallet_address'][-8:]
         gpn = f"{wallet['gagnants']}/{wallet['perdants']}/{wallet['neutres']}"
-        
-        print(f"{i:<4} {wallet_short:<45} {wallet['final_score']:<6.1f} "
-              f"{wallet['classification']:<9} {wallet['weighted_roi']:<7.1f} "
-              f"{wallet['nb_trades']:<7} {wallet['taux_reussite']:<7.1f} {gpn:<8}")
+        logger.info(f"{i:<4} {wallet_short} score={wallet['final_score']:.1f} "
+                    f"class={wallet['classification']} roi={wallet['weighted_roi']:.1f}% "
+                    f"trades={wallet['nb_trades']} reussite={wallet['taux_reussite']:.1f}% gpn={gpn}")
 
 def analyze_score_distribution(scored_wallets):
-    """Analyse la distribution des scores"""
-    
+    """Analyse la distribution des scores."""
     if not scored_wallets:
-        print("❌ Aucun wallet à analyser")
+        logger.warning("Aucun wallet à analyser")
         return
-    
-    print(f"\n📊 DISTRIBUTION DES SCORES")
-    print("=" * 50)
-    
-    # Statistiques générales
+
     scores = [w['final_score'] for w in scored_wallets]
     rois = [w['weighted_roi'] for w in scored_wallets]
-    
-    print(f"Score moyen: {sum(scores)/len(scores):.2f}")
-    print(f"Score médian: {sorted(scores)[len(scores)//2]:.2f}")
-    print(f"Score max: {max(scores):.2f}")
-    print(f"ROI moyen: {sum(rois)/len(rois):.2f}%")
-    
-    # Distribution par classification
+    logger.info(f"Score moyen={sum(scores)/len(scores):.2f} médian={sorted(scores)[len(scores)//2]:.2f} max={max(scores):.2f} | ROI moyen={sum(rois)/len(rois):.2f}%")
+
     classifications = {}
     for wallet in scored_wallets:
         classif = wallet['classification']
         classifications[classif] = classifications.get(classif, 0) + 1
-    
-    print(f"\nDistribution par classe:")
-    for classif, count in sorted(classifications.items(), 
-                                key=lambda x: ['ELITE', 'EXCELLENT', 'BON', 'MOYEN', 'FAIBLE'].index(x[0])):
+
+    for classif, count in sorted(classifications.items(),
+                                 key=lambda x: ['ELITE', 'EXCELLENT', 'BON', 'MOYEN', 'FAIBLE'].index(x[0])):
         pct = count / len(scored_wallets) * 100
-        print(f"  {classif}: {count} wallets ({pct:.1f}%)")
+        logger.info(f"  {classif}: {count} wallets ({pct:.1f}%)")
 
 def save_qualified_wallets(scored_wallets):
-    """Sauvegarde les wallets qualifiés dans la table wallet_qualified"""
-    
+    """Sauvegarde les wallets qualifiés dans la table wallet_qualified."""
     if not scored_wallets:
-        print("❌ Aucun wallet à sauvegarder")
+        logger.warning("Aucun wallet à sauvegarder")
         return
-    
+
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30.0)
-        
-        # Vider la table avant d'insérer les nouveaux résultats
+
         conn.execute("DELETE FROM wallet_qualified")
-        
-        # Préparer les données pour l'insertion
+
         insert_query = """
             INSERT INTO wallet_qualified (
                 wallet_address, final_score, classification,
@@ -298,8 +204,7 @@ def save_qualified_wallets(scored_wallets):
                 roi_score, activity_score, success_score, quality_bonus
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        
-        # Insérer chaque wallet qualifié
+
         for wallet in scored_wallets:
             data = (
                 wallet['wallet_address'],
@@ -318,27 +223,25 @@ def save_qualified_wallets(scored_wallets):
                 wallet['quality_bonus']
             )
             conn.execute(insert_query, data)
-        
+
         conn.commit()
         conn.close()
-        
-        print(f"✅ {len(scored_wallets)} wallets qualifiés sauvegardés dans wallet_qualified")
-        
+
+        logger.info(f"{len(scored_wallets)} wallets qualifiés sauvegardés dans wallet_qualified")
+
     except sqlite3.OperationalError as e:
         if "database is locked" in str(e):
-            print(f"⚠️ Base verrouillée, abandon sauvegarde")
+            logger.warning("Base verrouillée, abandon sauvegarde")
         else:
-            print(f"❌ Erreur SQL: {e}")
+            logger.error(f"Erreur SQL: {e}")
     except Exception as e:
-        print(f"❌ Erreur sauvegarde: {e}")
+        logger.error(f"Erreur sauvegarde: {e}")
 
 def get_qualified_wallets_stats():
-    """Affiche les statistiques des wallets qualifiés en base"""
-    
+    """Affiche les statistiques des wallets qualifiés en base."""
     try:
         conn = sqlite3.connect(DB_PATH)
-        
-        # Statistiques générales
+
         stats_query = """
             SELECT 
                 COUNT(*) as total,
@@ -350,8 +253,7 @@ def get_qualified_wallets_stats():
             FROM wallet_qualified
         """
         stats = conn.execute(stats_query).fetchone()
-        
-        # Distribution par classification
+
         classif_query = """
             SELECT classification, COUNT(*) as count
             FROM wallet_qualified
@@ -366,39 +268,27 @@ def get_qualified_wallets_stats():
                 END
         """
         classifs = conn.execute(classif_query).fetchall()
-        
+
         conn.close()
-        
+
         if stats[0] > 0:
-            print(f"\n📊 STATISTIQUES WALLET_QUALIFIED")
-            print("=" * 50)
-            print(f"Total wallets: {stats[0]}")
-            print(f"Score moyen: {stats[1]:.2f}")
-            print(f"ROI moyen: {stats[2]:.1f}%")
-            print(f"Trades moyen: {stats[3]:.1f}")
-            print(f"Score max: {stats[4]:.2f}")
-            print(f"Score min: {stats[5]:.2f}")
-            
-            print(f"\nDistribution par classe:")
+            logger.info(f"STATS wallet_qualified: total={stats[0]} score_moy={stats[1]:.2f} roi_moy={stats[2]:.1f}% trades_moy={stats[3]:.1f} score_max={stats[4]:.2f} score_min={stats[5]:.2f}")
             for classif, count in classifs:
                 pct = count / stats[0] * 100
-                print(f"  {classif}: {count} wallets ({pct:.1f}%)")
+                logger.info(f"  {classif}: {count} wallets ({pct:.1f}%)")
         else:
-            print("❌ Aucun wallet en base")
-            
+            logger.warning("Aucun wallet en base")
+
     except Exception as e:
-        print(f"❌ Erreur lecture stats: {e}")
+        logger.error(f"Erreur lecture stats: {e}")
 
 if __name__ == "__main__":
-    # Analyse de tous les wallets sans palier
-    scored_wallets = score_all_wallets(min_score=20)
-    
+    scored_wallets = score_all_wallets(min_score=_PL["SCORING_MIN_SCORE_DEFAULT"])
+
     if scored_wallets:
         display_top_wallets(scored_wallets, top_n=20)
         analyze_score_distribution(scored_wallets)
-        
-        # Sauvegarder en base
+
         save_qualified_wallets(scored_wallets)
-        
-        # Vérifier la sauvegarde
+
         get_qualified_wallets_stats()

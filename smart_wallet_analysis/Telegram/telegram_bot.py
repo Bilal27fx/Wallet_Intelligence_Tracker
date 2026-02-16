@@ -1,149 +1,169 @@
 #!/usr/bin/env python3
-"""
-Module Telegram Bot pour Alpha Intelligence Lab
-Envoie automatiquement les signaux de consensus détectés
-"""
-
-import requests
-import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-import os
-import logging
+
+import requests
 from dotenv import load_dotenv
+
+from smart_wallet_analysis.config import TELEGRAM
+from smart_wallet_analysis.logger import get_logger
 
 # Charger les variables d'environnement depuis le fichier .env
 ROOT_DIR = Path(__file__).parent.parent.parent
 ENV_PATH = ROOT_DIR / ".env"
 load_dotenv(ENV_PATH)
+_TG = TELEGRAM
 
-# Configuration du logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger("telegram.bot")
+
+
+def _env_flag(name, default=False):
+    """Retourne un booléen depuis une variable d'environnement."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _format_detection_date(detection_date):
+    """Formate la date de détection."""
+    if hasattr(detection_date, "strftime"):
+        return detection_date.strftime("%m/%d %H:%M")
+    return str(detection_date)[:10]
+
+
+def _format_market_cap(market_cap):
+    """Formate le market cap pour affichage."""
+    if market_cap >= 1_000_000:
+        return f"${market_cap/1_000_000:.1f}M"
+    if market_cap >= 1_000:
+        return f"${market_cap/1_000:.1f}K"
+    return f"${market_cap:,.0f}"
+
+
+def _quality_label(market_cap):
+    """Retourne la qualité du token selon le market cap."""
+    thresholds = _TG["QUALITY_MARKET_CAP_THRESHOLDS"]
+    if market_cap > thresholds["ULTRA_HIGH"]:
+        return "ULTRA HIGH", "⭐️⭐️⭐️"
+    if market_cap > thresholds["HIGH"]:
+        return "HIGH", "⭐️⭐️"
+    if market_cap > thresholds["MEDIUM"]:
+        return "MEDIUM", "⭐️"
+    return "EMERGING", "🔍"
+
+
+def _formation_label(total_investment):
+    """Retourne le type de formation selon l'investissement."""
+    thresholds = _TG["FORMATION_INVESTMENT_THRESHOLDS"]
+    if total_investment > thresholds["EXPLOSIVE"]:
+        return "🚀 EXPLOSIVE"
+    if total_investment > thresholds["RAPID"]:
+        return "⚡️ RAPID"
+    return "🕐 GRADUAL"
+
+
+def _build_links(contract_address, chain_id):
+    """Construit les liens DexScreener et explorer selon la chaîne."""
+    chain = (chain_id or _TG["DEFAULT_CHAIN_ID"]).lower()
+    if "base" in chain:
+        return (
+            f"https://dexscreener.com/base/{contract_address}",
+            f"https://basescan.org/address/{contract_address}",
+        )
+    if "bsc" in chain or "bnb" in chain:
+        return (
+            f"https://dexscreener.com/bsc/{contract_address}",
+            f"https://bscscan.com/address/{contract_address}",
+        )
+    return (
+        f"https://dexscreener.com/ethereum/{contract_address}",
+        f"https://etherscan.io/address/{contract_address}",
+    )
+
 
 class AlphaIntelligenceBot:
-    """Bot Telegram pour Alpha Intelligence Lab"""
-    
+    """Bot Telegram pour Alpha Intelligence Lab."""
+
     def __init__(self, bot_token=None, channel_id=None):
-        """
-        Initialise le bot Alpha Intelligence
-        
-        Args:
-            bot_token: Token du bot (lu depuis .env si non fourni)
-            channel_id: ID du canal (lu depuis .env si non fourni)
-        """
-        self.bot_token = bot_token or os.getenv('TELEGRAM_BOT_TOKEN')
-        self.channel_id = channel_id or os.getenv('TELEGRAM_CHANNEL_ID')
-        
+        """Initialise le bot Telegram."""
+        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self.channel_id = channel_id or os.getenv("TELEGRAM_CHANNEL_ID")
+        self.notifications_enabled = _env_flag("TELEGRAM_NOTIFICATIONS_ENABLED", default=True)
+
         if not self.bot_token:
-            raise ValueError("❌ TELEGRAM_BOT_TOKEN not found in .env")
+            raise ValueError("TELEGRAM_BOT_TOKEN not found in .env")
         if not self.channel_id:
-            raise ValueError("❌ TELEGRAM_CHANNEL_ID not found in .env")
-        
+            raise ValueError("TELEGRAM_CHANNEL_ID not found in .env")
+
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
-        
-        # Test de connexion
-        self.test_connection()
-    
+        if not self.test_connection():
+            logger.warning("Telegram getMe failed, send attempts may fail")
+
     def test_connection(self):
-        """Teste la connexion au bot"""
+        """Teste la connexion au bot."""
         try:
-            response = requests.get(f"{self.base_url}/getMe", timeout=10)
-            if response.status_code == 200:
-                return True
-            else:
-                return False
-        except Exception as e:
-            return False
-    
-    def send_message(self, message, parse_mode='HTML', disable_web_page_preview=True):
-        """
-        Envoie un message sur Alpha Intelligence Lab
-        
-        Args:
-            message: Texte du message
-            parse_mode: Format (HTML ou Markdown)
-            disable_web_page_preview: Désactiver aperçu liens
-            
-        Returns:
-            bool: Succès de l'envoi
-        """
-        try:
-            payload = {
-                'chat_id': self.channel_id,
-                'text': message,
-                'parse_mode': parse_mode,
-                'disable_web_page_preview': disable_web_page_preview
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/sendMessage", 
-                json=payload, 
-                timeout=30
+            response = requests.get(
+                f"{self.base_url}/getMe",
+                timeout=_TG.get("PING_TIMEOUT_SECONDS", 10),
             )
-            
-            if response.status_code == 200:
-                return True
-            else:
+            if response.status_code != 200:
+                logger.warning("Telegram getMe error: %s - %s", response.status_code, response.text[:300])
                 return False
-                
-        except Exception as e:
+            return True
+        except requests.RequestException as exc:
+            logger.warning("Telegram getMe request error: %s", exc)
             return False
-    
+
+    def send_message(self, message, parse_mode="HTML", disable_web_page_preview=True):
+        """Envoie un message sur le canal Telegram."""
+        if not self.notifications_enabled:
+            logger.info("Telegram notifications disabled (TELEGRAM_NOTIFICATIONS_ENABLED=false)")
+            return True
+
+        payload = {
+            "chat_id": self.channel_id,
+            "text": message,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": disable_web_page_preview,
+        }
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/sendMessage",
+                json=payload,
+                timeout=_TG.get("SEND_TIMEOUT_SECONDS", 30),
+            )
+            if response.status_code != 200:
+                logger.error("Telegram sendMessage error: %s - %s", response.status_code, response.text[:300])
+                return False
+            return True
+        except requests.RequestException as exc:
+            logger.error("Telegram sendMessage request error: %s", exc)
+            return False
+
     def format_alpha_signal(self, token_data):
-        """
-        Formate un signal alpha TOKEN FOCUS pour Alpha Intelligence Lab
-        FOCUS: Token + Métriques uniquement (PAS de consensus/wallets)
-        
-        Args:
-            token_data: Données du token détecté
-            
-        Returns:
-            str: Message formaté token-centric
-        """
-        symbol = token_data.get('symbol', 'UNKNOWN')
-        total_investment = token_data.get('total_investment', 0)
-        contract_address = token_data.get('contract_address', 'N/A')
-        detection_date = token_data.get('detection_date', datetime.now(timezone.utc))
-        
-        # Données DexScreener
-        token_info = token_data.get('token_info', {})
-        price = token_info.get('price_usd', 0)
-        market_cap = token_info.get('market_cap', 0)
-        liquidity = token_info.get('liquidity_usd', 0)
-        volume_24h = token_info.get('volume_24h', 0)
-        price_change_24h = token_info.get('price_change_24h', 0)
-        
-        # Déterminer la formation du signal
-        if hasattr(detection_date, 'strftime'):
-            formation_date = detection_date.strftime('%m/%d %H:%M')
-        else:
-            formation_date = str(detection_date)[:10]
-        
-        # Déterminier la qualité basée sur market cap et volume
-        if market_cap > 50_000_000:
-            quality = "ULTRA HIGH"
-            quality_emoji = "⭐️⭐️⭐️"
-        elif market_cap > 10_000_000:
-            quality = "HIGH"  
-            quality_emoji = "⭐️⭐️"
-        elif market_cap > 1_000_000:
-            quality = "MEDIUM"
-            quality_emoji = "⭐️"
-        else:
-            quality = "EMERGING"
-            quality_emoji = "🔍"
-        
-        # Formation style basée sur l'investissement
-        if total_investment > 100_000:
-            formation = "🚀 EXPLOSIVE"
-        elif total_investment > 50_000:
-            formation = "⚡️ RAPID"
-        else:
-            formation = "🕐 GRADUAL"
-        
-        # Message TOKEN FOCUS
+        """Formate un signal token-centric."""
+        symbol = token_data.get("symbol", "UNKNOWN")
+        total_investment = token_data.get("total_investment", 0)
+        contract_address = token_data.get("contract_address", "N/A")
+        detection_date = token_data.get("detection_date", datetime.now(timezone.utc))
+
+        token_info = token_data.get("token_info", {}) or {}
+        price = token_info.get("price_usd", 0)
+        market_cap = token_info.get("market_cap", 0)
+        liquidity = token_info.get("liquidity_usd", 0)
+        volume_24h = token_info.get("volume_24h", 0)
+        price_change_24h = token_info.get("price_change_24h", 0)
+        chain_id = token_info.get("chain_id", _TG["DEFAULT_CHAIN_ID"])
+
+        quality, quality_emoji = _quality_label(market_cap)
+        formation = _formation_label(total_investment)
+        formation_date = _format_detection_date(detection_date)
+        dex_link, explorer_link = _build_links(contract_address, chain_id)
+
         message = f"""🧠 <b>ALPHA SIGNAL DETECTED</b>
 
 🪙 <b>TOKEN:</b> {symbol}
@@ -152,16 +172,9 @@ class AlphaIntelligenceBot:
 📅 <b>DETECTED:</b> {formation_date}
 
 📊 <b>MARKET METRICS:</b>"""
-        
+
         if token_info:
-            # Formatage du market cap
-            if market_cap >= 1_000_000:
-                mcap_display = f"${market_cap/1_000_000:.1f}M"
-            elif market_cap >= 1_000:
-                mcap_display = f"${market_cap/1_000:.1f}K"
-            else:
-                mcap_display = f"${market_cap:,.0f}"
-                
+            mcap_display = _format_market_cap(market_cap)
             message += f"""
 💲 <b>Price:</b> ${price:.8f}
 📊 <b>Market Cap:</b> {mcap_display}
@@ -171,19 +184,7 @@ class AlphaIntelligenceBot:
 {quality_emoji} <b>Quality:</b> {quality}"""
         else:
             message += "\n⚠️ <i>Market data loading...</i>"
-        
-        # Déterminer les liens (assumer Ethereum par défaut)
-        chain_id = token_info.get('chain_id', 'ethereum')
-        if chain_id == 'base' or 'base' in str(chain_id).lower():
-            dex_link = f"https://dexscreener.com/base/{contract_address}"
-            explorer_link = f"https://basescan.org/address/{contract_address}"
-        elif chain_id == 'bsc' or 'bsc' in str(chain_id).lower():
-            dex_link = f"https://dexscreener.com/bsc/{contract_address}"
-            explorer_link = f"https://bscscan.com/address/{contract_address}"
-        else:
-            dex_link = f"https://dexscreener.com/ethereum/{contract_address}"
-            explorer_link = f"https://etherscan.io/address/{contract_address}"
-        
+
         message += f"""
 
 🔗 <b>CONTRACT:</b> <code>{contract_address}</code>
@@ -194,86 +195,60 @@ class AlphaIntelligenceBot:
 
 🤖 <b>Alpha Intelligence Lab</b>
 🕐 <i>{datetime.now(timezone.utc).strftime('%m/%d %H:%M UTC')}</i>"""
-        
+
         return message
-    
+
     def send_alpha_signal(self, consensus_data):
-        """
-        Envoie un signal alpha sur le canal
-        
-        Args:
-            consensus_data: Données du consensus
-            
-        Returns:
-            bool: Succès de l'envoi
-        """
+        """Envoie un signal alpha unique."""
         try:
             message = self.format_alpha_signal(consensus_data)
             return self.send_message(message)
-        except Exception as e:
-            logger.error(f"❌ Erreur formatage signal: {e}")
+        except Exception as exc:
+            logger.error("Erreur formatage signal: %s", exc)
             return False
-    
+
     def send_multiple_signals(self, consensus_list):
-        """
-        Envoie plusieurs signaux avec délai entre chaque
-        
-        Args:
-            consensus_list: Liste des consensus détectés
-            
-        Returns:
-            int: Nombre de signaux envoyés
-        """
+        """Envoie plusieurs signaux avec délai anti-spam."""
         sent_count = 0
-        
         if not consensus_list:
             return 0
-        
+
+        delay_seconds = float(_TG.get("SEND_DELAY_SECONDS", 3))
         for i, consensus in enumerate(consensus_list, 1):
             if self.send_alpha_signal(consensus):
                 sent_count += 1
-            
-            # Délai anti-spam
             if i < len(consensus_list):
-                time.sleep(3)
+                time.sleep(delay_seconds)
         return sent_count
-    
+
     def send_lab_summary(self, consensus_count, total_investment=0):
-        """
-        Envoie un résumé de session d'analyse SIMPLIFIÉ
-        
-        Args:
-            consensus_count: Nombre de consensus détectés
-            total_investment: Capital total détecté
-        """
+        """Envoie un résumé de scan."""
         if consensus_count == 0:
-            # Ne pas envoyer de message si aucun signal détecté
             return True
-        else:
-            message = f"""🤖 <b>Scan terminé</b>
+
+        message = f"""🤖 <b>Scan terminé</b>
 
 ✅ {consensus_count} signal{'s' if consensus_count > 1 else ''} détecté{'s' if consensus_count > 1 else ''}
 💰 ${total_investment:,.0f} investis
 
 <i>Prochain scan dans 1h</i>"""
-        
+
         return self.send_message(message)
-    
+
     def send_system_startup(self):
-        """Envoie un message de démarrage du système SIMPLIFIÉ"""
+        """Envoie un message de démarrage."""
         message = """🤖 <b>Alpha Intelligence Lab démarré</b>
 
 Scan automatique activé
 
 <i>Recherche de signaux en cours...</i>"""
-        
+
         return self.send_message(message)
-    
+
     def send_scan_completion_message(self):
-        """Envoie un message futuriste IA de fin de scan blockchain"""
-        
+        """Envoie un message de fin de scan."""
         message = """🤖 <b>ALPHA INTELLIGENCE NEURAL NETWORK</b>
-        
+
 🔍 <b>BLOCKCHAIN SCAN COMPLETED</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -287,64 +262,42 @@ Scan automatique activé
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i>Powered by Alpha Intelligence Lab</i>"""
-        
+
         try:
             success = self.send_message(message)
             if success:
-                logger.info("✅ Message de fin de scan envoyé")
+                logger.info("Message de fin de scan envoyé")
             else:
-                logger.error("❌ Échec envoi message de fin de scan")
+                logger.error("Échec envoi message de fin de scan")
             return success
-        except Exception as e:
-            logger.error(f"❌ Erreur message fin de scan: {e}")
+        except Exception as exc:
+            logger.error("Erreur message fin de scan: %s", exc)
             return False
 
 
-# Fonction utilitaire pour intégration facile
 def send_consensus_to_telegram(consensus_dict):
-    """
-    Fonction simple pour envoyer les consensus détectés (nouveau format)
-    
-    Args:
-        consensus_dict: Dictionnaire des consensus {symbol: data}
-        
-    Returns:
-        bool: Succès de l'opération
-    """
+    """Envoie une collection de consensus vers Telegram."""
     try:
         bot = AlphaIntelligenceBot()
-        
-        if consensus_dict:
-            # Convertir le dictionnaire en liste avec symbol inclus
-            consensus_list = []
-            for symbol, data in consensus_dict.items():
-                data['symbol'] = symbol  # Ajouter le symbol aux données
-                consensus_list.append(data)
-            
-            sent_count = bot.send_multiple_signals(consensus_list)
-            
-            # PAS de résumé - seulement les signaux purs
-            
-            return sent_count > 0
-        else:
-            # Aucun message si pas de consensus
+
+        if not consensus_dict:
             return True
-            
-    except Exception as e:
-        logger.error(f"❌ Erreur transmission Telegram: {e}")
+
+        consensus_list = [
+            {**data, "symbol": symbol}
+            for symbol, data in consensus_dict.items()
+        ]
+        sent_count = bot.send_multiple_signals(consensus_list)
+        return sent_count > 0
+    except Exception as exc:
+        logger.error("Erreur transmission Telegram: %s", exc)
         return False
 
 
-# Test du module
 if __name__ == "__main__":
-    print("🧠 Alpha Intelligence Bot - Module de test")
-    
+    logger.info("Alpha Intelligence Bot - Test module")
     try:
         bot = AlphaIntelligenceBot()
-        
-        # Test de démarrage
         bot.send_system_startup()
-       
-        
-    except Exception as e:
-        print(f"❌ Erreur de test: {e}")
+    except Exception as exc:
+        logger.error("Erreur de test: %s", exc)

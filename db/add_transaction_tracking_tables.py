@@ -7,14 +7,17 @@ SEULEMENT pour les wallets avec changements détectés
 import sqlite3
 from pathlib import Path
 
+from smart_wallet_analysis.logger import get_logger
+
 # Chemin vers le fichier SQLite
 SQLITE_PATH = Path(__file__).parent.parent / "data" / "db" / "wit_database.db"
+logger = get_logger("db.add_transaction_tracking_tables")
 
 def add_transaction_tracking_tables():
     """Ajoute les tables de tracking des transactions sans toucher à l'existant"""
     
     if not SQLITE_PATH.exists():
-        print(f"❌ Base de données non trouvée: {SQLITE_PATH}")
+        logger.info(f"❌ Base de données non trouvée: {SQLITE_PATH}")
         return False
     
     conn = sqlite3.connect(str(SQLITE_PATH))
@@ -35,7 +38,7 @@ def add_transaction_tracking_tables():
             PRIMARY KEY (wallet_address)
         );
         """)
-        print("✅ Table wallet_transaction_snapshots ajoutée")
+        logger.info("✅ Table wallet_transaction_snapshots ajoutée")
         
         # Table pour nouvelles transactions détectées depuis le dernier scan
         cursor.execute("""
@@ -63,7 +66,7 @@ def add_transaction_tracking_tables():
             UNIQUE(transaction_hash, wallet_address)
         );
         """)
-        print("✅ Table wallet_new_transactions ajoutée")
+        logger.info("✅ Table wallet_new_transactions ajoutée")
         
         # Index pour performance optimale
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tx_snapshots_wallet ON wallet_transaction_snapshots(wallet_address);")
@@ -75,12 +78,12 @@ def add_transaction_tracking_tables():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_new_tx_timestamp ON wallet_new_transactions(transaction_timestamp);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_new_tx_detected ON wallet_new_transactions(detected_at);")
         
-        print("✅ Index de performance ajoutés")
+        logger.info("✅ Index de performance ajoutés")
         
         conn.commit()
         conn.close()
         
-        print(f"✅ Tables de tracking des transactions ajoutées avec succès")
+        logger.info(f"✅ Tables de tracking des transactions ajoutées avec succès")
         
         # Vérifier les nouvelles tables
         conn = sqlite3.connect(str(SQLITE_PATH))
@@ -94,14 +97,14 @@ def add_transaction_tracking_tables():
         tracking_tables = cursor.fetchall()
         conn.close()
         
-        print(f"📋 Tables de tracking disponibles:")
+        logger.info(f"📋 Tables de tracking disponibles:")
         for table in tracking_tables:
-            print(f"   • {table[0]}")
+            logger.info(f"   • {table[0]}")
         
         return True
         
     except Exception as e:
-        print(f"❌ Erreur lors de l'ajout des tables: {e}")
+        logger.info(f"❌ Erreur lors de l'ajout des tables: {e}")
         conn.rollback()
         conn.close()
         return False
@@ -118,9 +121,9 @@ def show_table_structure():
             cursor.execute(f"PRAGMA table_info({table})")
             columns = cursor.fetchall()
             
-            print(f"\n📊 Structure de {table}:")
-            print(f"{'Colonne':<30} {'Type':<15} {'Contraintes'}")
-            print("-" * 60)
+            logger.info(f"\n📊 Structure de {table}:")
+            logger.info(f"{'Colonne':<30} {'Type':<15} {'Contraintes'}")
+            logger.info("-" * 60)
             for col in columns:
                 name, type_name, not_null, default, pk = col
                 constraints = []
@@ -128,28 +131,28 @@ def show_table_structure():
                 if not_null: constraints.append("NOT NULL")
                 if default: constraints.append(f"DEFAULT {default}")
                 
-                print(f"{name:<30} {type_name:<15} {', '.join(constraints)}")
+                logger.info(f"{name:<30} {type_name:<15} {', '.join(constraints)}")
                 
         except Exception as e:
-            print(f"❌ Erreur lecture structure {table}: {e}")
+            logger.info(f"❌ Erreur lecture structure {table}: {e}")
     
     conn.close()
 
 if __name__ == "__main__":
-    print("🚀 AJOUT DES TABLES DE TRACKING DES TRANSACTIONS")
-    print(f"📂 Base de données: {SQLITE_PATH}")
-    print("🎯 OPTIMISATION: Transactions récupérées SEULEMENT pour wallets avec changements")
+    logger.info("🚀 AJOUT DES TABLES DE TRACKING DES TRANSACTIONS")
+    logger.info(f"📂 Base de données: {SQLITE_PATH}")
+    logger.info("🎯 OPTIMISATION: Transactions récupérées SEULEMENT pour wallets avec changements")
     
     success = add_transaction_tracking_tables()
     
     if success:
-        print("\n✅ SUCCÈS! Les tables de tracking des transactions sont prêtes")
-        print("   • Récupération conditionnelle des transactions")
-        print("   • Corrélation automatique changements ↔ transactions")
-        print("   • Optimisation des calls API blockchain")
+        logger.info("\n✅ SUCCÈS! Les tables de tracking des transactions sont prêtes")
+        logger.info("   • Récupération conditionnelle des transactions")
+        logger.info("   • Corrélation automatique changements ↔ transactions")
+        logger.info("   • Optimisation des calls API blockchain")
         
         # Afficher la structure
         show_table_structure()
         
     else:
-        print("\n❌ ÉCHEC! Vérifier les erreurs ci-dessus")
+        logger.info("\n❌ ÉCHEC! Vérifier les erreurs ci-dessus")

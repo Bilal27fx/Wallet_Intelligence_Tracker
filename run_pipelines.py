@@ -1,259 +1,253 @@
 #!/usr/bin/env python3
-"""
-WIT PIPELINES ORCHESTRATOR
-Gère l'exécution automatique et manuelle des pipelines d'analyse
-
-PIPELINES:
-1. Discovery Pipeline    - Construction de la BDD (nouveaux wallets)
-2. Scoring Pipeline      - Re-scoring quotidien de tous les wallets
-3. Smart Wallets Live    - Mise à jour live des smart wallets (toutes les 2h)
-
-SCHEDULER:
-- Discovery Pipeline:     1x par semaine (lundi 02:00)
-- Scoring Pipeline:       1x par jour (tous les jours à 04:00)
-- Smart Wallets Live:     Toutes les 2 heures
-
-IMPORTANT:
-Avant de lancer le Discovery Pipeline, vous DEVEZ remplir le fichier:
-📄 /data/raw/json/explosive_tokens_manual.json
-
-Format attendu:
-[
-  {
-    "token_address": "0x...",
-    "symbol": "PEPE",
-    "chain": "ethereum",
-    "perf_window": "250j",
-    "type": 1
-  }
-]
-"""
+"""Orchestrateur des pipelines WIT."""
 
 import sys
 import time
-import schedule
-from pathlib import Path
+import argparse
 from datetime import datetime
 
-# Configuration des paths
-ROOT = Path(__file__).parent
-sys.path.insert(0, str(ROOT / "smart_wallet_analysis"))
+import schedule
 
-# Import des pipelines
-from smart_wallet_analysis.discovery_pipeline_runner import run_discovery_pipeline
-from smart_wallet_analysis.scoring_pipeline_runner import run_complete_scoring_pipeline
-from smart_wallet_analysis.run_smartwallets_pipeline import run_tracking_and_fifo_pipeline
+from smart_wallet_analysis.logger import get_logger
+
+logger = get_logger("pipelines.orchestrator")
 
 
-def check_explosive_tokens_file():
-    """Vérifie que le fichier explosive_tokens_manual.json existe et n'est pas vide"""
-    tokens_file = ROOT / "data" / "raw" / "json" / "explosive_tokens_manual.json"
-
-    if not tokens_file.exists():
-        print("\n" + "="*80)
-        print("⚠️  ATTENTION: Fichier explosive_tokens_manual.json introuvable!")
-        print("="*80)
-        print(f"📄 Chemin attendu: {tokens_file}")
-        print()
-        print("📝 Créez ce fichier avec le format suivant:")
-        print("""
-[
-  {
-    "token_address": "0x...",
-    "symbol": "PEPE",
-    "chain": "ethereum",
-    "perf_window": "250j",
-    "type": 1
-  }
-]
-        """)
-        print("="*80 + "\n")
-        return False
-
-    import json
-    try:
-        with open(tokens_file, 'r') as f:
-            tokens = json.load(f)
-            if not tokens or len(tokens) == 0:
-                print("\n" + "="*80)
-                print("⚠️  ATTENTION: Le fichier explosive_tokens_manual.json est vide!")
-                print("="*80)
-                print(f"📄 Fichier: {tokens_file}")
-                print()
-                print("📝 Ajoutez des tokens explosifs avec le format suivant:")
-                print("""
-[
-  {
-    "token_address": "0x...",
-    "symbol": "PEPE",
-    "chain": "ethereum",
-    "perf_window": "250j",
-    "type": 1
-  }
-]
-                """)
-                print("="*80 + "\n")
-                return False
-
-            print(f"✅ Fichier explosive_tokens_manual.json trouvé: {len(tokens)} token(s)")
-            return True
-
-    except json.JSONDecodeError:
-        print(f"\n❌ Erreur: Le fichier {tokens_file} contient du JSON invalide")
-        return False
+def _log_section(title, width=80):
+    """Affiche un en-tete de section."""
+    line = "=" * width
+    logger.info("")
+    logger.info("%s", line)
+    logger.info("%s", title)
+    logger.info("%s", line)
+    logger.info("")
 
 
 def print_banner():
-    """Affiche la bannière du système"""
-    print("\n" + "="*80)
-    print("🚀 WIT PIPELINES ORCHESTRATOR")
-    print("="*80)
-    print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*80 + "\n")
+    """Affiche la banniere du systeme."""
+    _log_section("WIT PIPELINES ORCHESTRATOR")
+    logger.info("Demarrage: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 def run_discovery():
-    """Exécute le Discovery Pipeline avec vérification préalable"""
+    """Execute le Discovery Pipeline."""
     print_banner()
-    print("📋 LANCEMENT: Discovery Pipeline (Construction de la BDD)")
-    print()
+    logger.info("LANCEMENT: Discovery Pipeline")
 
-    # Vérifier le fichier explosive_tokens_manual.json
-    if not check_explosive_tokens_file():
-        print("❌ Discovery Pipeline annulé: fichier explosive_tokens_manual.json manquant ou vide")
-        print()
-        print("➡️  Remplissez le fichier puis relancez:")
-        print("    python run_pipelines.py --discovery")
-        print()
-        return False
-
-    print()
     try:
-        success = run_discovery_pipeline(
+        from smart_wallet_analysis.discovery_pipeline_runner import run_discovery_pipeline
+        return run_discovery_pipeline(
             skip_token_discovery=False,
             skip_wallet_tracker=False,
             skip_score_engine=False,
             quality_filter=0.0
         )
-        return success
     except Exception as e:
-        print(f"\n❌ Erreur lors du Discovery Pipeline: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Erreur Discovery Pipeline: %s", e)
         return False
 
 
 def run_scoring():
-    """Exécute le Scoring Pipeline (re-scoring quotidien)"""
+    """Execute le Scoring Pipeline."""
     print_banner()
-    print("📋 LANCEMENT: Scoring Pipeline (Re-scoring quotidien)")
-    print()
+    logger.info("LANCEMENT: Scoring Pipeline")
 
     try:
-        success = run_complete_scoring_pipeline()
-        return success
+        from smart_wallet_analysis.scoring_pipeline_runner import run_complete_scoring_pipeline
+        return run_complete_scoring_pipeline()
     except Exception as e:
-        print(f"\n❌ Erreur lors du Scoring Pipeline: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Erreur Scoring Pipeline: %s", e)
         return False
 
 
 def run_smartwallets_live():
-    """Exécute le Smart Wallets Live Pipeline (tracking temps réel)"""
+    """Execute le Smart Wallets Live Pipeline."""
     print_banner()
-    print("📋 LANCEMENT: Smart Wallets Live Pipeline (Tracking temps réel)")
-    print()
+    logger.info("LANCEMENT: Smart Wallets Live Pipeline")
 
     try:
-        success = run_tracking_and_fifo_pipeline()
-        return success
+        from smart_wallet_analysis.run_smartwallets_pipeline import (
+            run_tracking_and_fifo_pipeline,
+        )
+        return run_tracking_and_fifo_pipeline()
     except Exception as e:
-        print(f"\n❌ Erreur lors du Smart Wallets Live Pipeline: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Erreur Smart Wallets Live Pipeline: %s", e)
+        return False
+
+
+def run_consensus_live():
+    """Execute la detection de consensus live."""
+    print_banner()
+    logger.info("LANCEMENT: Consensus Live Detector")
+    try:
+        from smart_wallet_analysis.consensus_live.consensus_live_detector import (
+            run_live_consensus_detection,
+        )
+        signals = run_live_consensus_detection()
+        logger.info("Consensus detectes: %s", len(signals))
+        return True
+    except Exception as e:
+        logger.error("Erreur Consensus Live Detector: %s", e)
+        return False
+
+
+def run_backtesting_simple():
+    """Execute le backtesting consensus simple."""
+    print_banner()
+    logger.info("LANCEMENT: Backtesting Consensus Simple")
+    try:
+        from smart_wallet_analysis.backtesting_engine.consensus_backtesting_simple import (
+            run_simple_backtesting,
+            export_simple_results,
+        )
+        all_consensus, period_results = run_simple_backtesting()
+        if all_consensus:
+            export_simple_results(all_consensus, period_results)
+            logger.info("Backtesting termine: %s consensus exportes", len(all_consensus))
+        else:
+            logger.info("Backtesting termine: aucun consensus detecte")
+        return True
+    except Exception as e:
+        logger.error("Erreur Backtesting Consensus Simple: %s", e)
         return False
 
 
 def scheduled_discovery():
-    """Tâche planifiée: Discovery Pipeline (hebdomadaire)"""
-    print("\n" + "🕐 "*40)
-    print("⏰ TÂCHE PLANIFIÉE: Discovery Pipeline (hebdomadaire)")
-    print("🕐 "*40 + "\n")
+    """Tache planifiee: Discovery quotidien."""
+    _log_section("TACHE PLANIFIEE: Discovery Pipeline")
     run_discovery()
 
 
 def scheduled_scoring():
-    """Tâche planifiée: Scoring Pipeline (quotidien)"""
-    print("\n" + "🕐 "*40)
-    print("⏰ TÂCHE PLANIFIÉE: Scoring Pipeline (quotidien)")
-    print("🕐 "*40 + "\n")
+    """Tache planifiee: Scoring quotidien."""
+    _log_section("TACHE PLANIFIEE: Scoring Pipeline")
     run_scoring()
 
 
 def scheduled_smartwallets_live():
-    """Tâche planifiée: Smart Wallets Live (toutes les 2h)"""
-    print("\n" + "🕐 "*40)
-    print("⏰ TÂCHE PLANIFIÉE: Smart Wallets Live (2h)")
-    print("🕐 "*40 + "\n")
+    """Tache planifiee: Smart Wallets Live toutes les 2h."""
+    _log_section("TACHE PLANIFIEE: Smart Wallets Live (2h)")
     run_smartwallets_live()
 
 
 def run_scheduler():
-    """Lance le scheduler automatique"""
+    """Lance le scheduler automatique."""
     print_banner()
-    print("🤖 MODE SCHEDULER AUTOMATIQUE")
-    print()
-    print("📅 PLANIFICATION:")
-    print("   • Discovery Pipeline:      Tous les lundis à 02:00")
-    print("   • Scoring Pipeline:        Tous les jours à 04:00")
-    print("   • Smart Wallets Live:      Toutes les 2 heures")
-    print()
-    print("⚠️  IMPORTANT: Avant le prochain Discovery Pipeline, remplissez:")
-    print(f"   📄 {ROOT / 'data' / 'raw' / 'json' / 'explosive_tokens_manual.json'}")
-    print()
-    print("💡 TIP: Ctrl+C pour arrêter le scheduler")
-    print("="*80 + "\n")
+    logger.info("MODE SCHEDULER AUTOMATIQUE")
+    logger.info("Planification:")
+    logger.info("Discovery Pipeline: tous les jours a 02:00")
+    logger.info("Scoring Pipeline: tous les 2 jours a 04:00")
+    logger.info("Smart Wallets Live: toutes les 2 heures")
 
-    # Configuration des tâches planifiées
-    schedule.every().monday.at("02:00").do(scheduled_discovery)
-    schedule.every().day.at("04:00").do(scheduled_scoring)
+    schedule.every().day.at("02:00").do(scheduled_discovery)
+    schedule.every(2).days.at("04:00").do(scheduled_scoring)
     schedule.every(2).hours.do(scheduled_smartwallets_live)
 
-    print("✅ Scheduler démarré. En attente des prochaines tâches planifiées...")
-    print()
+    logger.info("Scheduler demarre. En attente des prochaines taches...")
+    logger.info("Prochaines executions:")
+    for job in schedule.get_jobs():
+        logger.info("%s - %s", job.next_run.strftime("%Y-%m-%d %H:%M:%S"), job.job_func.__name__)
 
-    # Afficher les prochaines exécutions
-    jobs = schedule.get_jobs()
-    print("📋 PROCHAINES EXÉCUTIONS:")
-    for job in jobs:
-        print(f"   • {job.next_run.strftime('%Y-%m-%d %H:%M:%S')} - {job.job_func.__name__}")
-    print()
-
-    # Boucle principale du scheduler
     try:
         while True:
             schedule.run_pending()
-            time.sleep(60)  # Vérifier toutes les minutes
+            time.sleep(60)
     except KeyboardInterrupt:
-        print("\n\n⚠️  Scheduler arrêté par l'utilisateur")
+        logger.warning("Scheduler arrete par l'utilisateur")
         sys.exit(0)
+
+
+def _menu_actions():
+    """Retourne le mapping des actions disponibles."""
+    return {
+        "1": ("Discovery Pipeline", run_discovery),
+        "2": ("Scoring Pipeline", run_scoring),
+        "3": ("Smart Wallets Live Pipeline", run_smartwallets_live),
+        "4": ("Consensus Live Detector", run_consensus_live),
+        "5": ("Backtesting Consensus Simple", run_backtesting_simple),
+        "6": ("Scheduler Automatique", run_scheduler),
+        "0": ("Quitter", None),
+    }
+
+
+def _show_menu():
+    """Affiche le menu interactif."""
+    _log_section("MENU WIT PIPELINES")
+    logger.info("Choisis une option:")
+    for key, (label, _) in _menu_actions().items():
+        logger.info("  %s) %s", key, label)
+
+
+def run_interactive_menu():
+    """Lance le menu interactif."""
+    while True:
+        _show_menu()
+        try:
+            choice = input("\nOption > ").strip()
+        except EOFError:
+            logger.warning("Entrée fermée, arrêt du menu")
+            return 0
+
+        actions = _menu_actions()
+        if choice not in actions:
+            logger.warning("Option invalide: %s", choice)
+            continue
+
+        label, action = actions[choice]
+        if action is None:
+            logger.info("Sortie du menu")
+            return 0
+
+        logger.info("Execution: %s", label)
+        success = action()
+        logger.info("Resultat: %s", "SUCCES" if success else "ECHEC")
+        if choice == "6":
+            return 0
+
+
+def _parse_args():
+    """Parse les arguments CLI."""
+    parser = argparse.ArgumentParser(description="Orchestrateur des pipelines WIT")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="menu",
+        choices=[
+            "menu",
+            "scheduler",
+            "discovery",
+            "scoring",
+            "smartwallets",
+            "consensus",
+            "backtest",
+        ],
+        help="Commande a executer (defaut: menu)",
+    )
+    return parser.parse_args()
 
 
 def main():
-    """Point d'entrée principal - Lance directement le scheduler"""
-
+    """Point d'entree principal."""
     try:
-        # Lancer directement le scheduler automatique
-        run_scheduler()
-
+        args = _parse_args()
+        dispatch = {
+            "menu": run_interactive_menu,
+            "scheduler": run_scheduler,
+            "discovery": run_discovery,
+            "scoring": run_scoring,
+            "smartwallets": run_smartwallets_live,
+            "consensus": run_consensus_live,
+            "backtest": run_backtesting_simple,
+        }
+        result = dispatch[args.command]()
+        if isinstance(result, bool):
+            sys.exit(0 if result else 1)
+        sys.exit(0)
     except KeyboardInterrupt:
-        print("\n\n⚠️  Scheduler arrêté par l'utilisateur")
+        logger.warning("Execution arretee par l'utilisateur")
         sys.exit(0)
     except Exception as e:
-        print(f"\n\n❌ Erreur fatale: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Erreur fatale: %s", e)
         sys.exit(1)
 
 

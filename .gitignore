@@ -46,6 +46,8 @@ data/cache/
 data/backtesting/
 data/raw/csv/
 data/processed/
+CLAUDE.md
+CODEX.md
 
 # Temporary files
 *.tmp

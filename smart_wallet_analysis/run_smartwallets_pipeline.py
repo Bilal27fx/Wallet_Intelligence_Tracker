@@ -1,73 +1,92 @@
 #!/usr/bin/env python3
-"""
-Runner orchestrateur: Pipeline complet d'analyse des Smart Wallets
-Exécute séquentiellement:
-1. Tracking live des smart wallets
-2. Analyse FIFO des smart wallets
-3. Scoring des wallets (avec filtre 150k si ROI < 50%)
-4. Analyse simple par paliers (3K-12K)
-5. Analyse des seuils optimaux
-"""
+"""Runner orchestrateur smart wallets."""
 
 import sys
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
-# Configuration des paths
-ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(ROOT / "module" / "smart_wallet_analysis" / "tracking_live"))
-sys.path.insert(0, str(ROOT / "module" / "smart_wallet_analysis" / "score_engine"))
+# Permet l'execution directe du fichier:
+# python smart_wallet_analysis/run_smartwallets_pipeline.py
+if __package__ is None or __package__ == "":
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
-# Imports
-from tracking_live.run import run_complete_live_tracking
-from score_engine.fifo_clean_simple import run_smart_wallets_fifo
-from score_engine.wallet_scoring_system import score_all_wallets, save_qualified_wallets
-from score_engine.simple_wallet_analyzer import analyze_qualified_wallets
-from score_engine.optimal_threshold_analyzer import OptimalThresholdAnalyzer
+from smart_wallet_analysis.config import PIPELINES, SMART_WALLETS_PIPELINE
+from smart_wallet_analysis.logger import get_logger
+from smart_wallet_analysis.tracking_live.run import run_complete_live_tracking
+from smart_wallet_analysis.score_engine.fifo_clean_simple import run_smart_wallets_fifo
+from smart_wallet_analysis.score_engine.wallet_scoring_system import score_all_wallets, save_qualified_wallets
+from smart_wallet_analysis.score_engine.simple_wallet_analyzer import analyze_qualified_wallets
+from smart_wallet_analysis.score_engine.optimal_threshold_analyzer import OptimalThresholdAnalyzer
+from smart_wallet_analysis.consensus_live.consensus_live_detector import run_live_consensus_detection
+from smart_wallet_analysis.Telegram.telegram_bot import send_consensus_to_telegram
+
+_PL = PIPELINES
+_SW = SMART_WALLETS_PIPELINE
+logger = get_logger("smart_wallets.pipeline")
+
+
+def _log_section(title, width=80):
+    """Affiche un en-tête de section."""
+    line = "=" * width
+    logger.info("")
+    logger.info("%s", line)
+    logger.info("%s", title)
+    logger.info("%s", line)
+    logger.info("")
+
+
+def _build_telegram_data(consensus_signals):
+    """Convertit les signaux consensus au format Telegram."""
+    telegram_data = {}
+    for signal in consensus_signals:
+        symbol = signal["symbol"]
+        telegram_data[symbol] = {
+            "symbol": symbol,
+            "total_investment": signal["total_investment"],
+            "contract_address": signal["contract_address"],
+            "detection_date": signal["detection_date"],
+            "token_info": signal.get("token_info", {}),
+            "performance": signal.get("performance", {}),
+            "whale_count": signal["whale_count"],
+            "signal_type": signal["signal_type"],
+        }
+    return telegram_data
 
 
 def run_tracking_and_fifo_pipeline():
-    """Pipeline complet: Tracking → FIFO → Scoring → Analyses"""
-
-    print("\n" + "=" * 80)
-    print("🎯 PIPELINE COMPLET D'ANALYSE SMART WALLETS")
-    print("=" * 80)
-    print(f"⏰ Démarrage: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 80 + "\n")
+    """Pipeline complet: tracking → FIFO → scoring → analyses."""
+    _log_section("🎯 PIPELINE COMPLET D'ANALYSE SMART WALLETS")
+    logger.info("⏰ Démarrage: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
     start_time = time.time()
     step_times = {}
 
-    # ==========================================
-    # ÉTAPE 1: TRACKING LIVE
-    # ==========================================
-    print("=" * 80)
-    print("📡 ÉTAPE 1/5: TRACKING LIVE DES SMART WALLETS")
-    print("=" * 80 + "\n")
+    _log_section("📡 ÉTAPE 1/6: TRACKING LIVE DES SMART WALLETS")
 
     step1_start = time.time()
     try:
         run_complete_live_tracking(
             enable_transaction_tracking=True,
-            min_usd=500,
-            hours_lookback=24
+            min_usd=_PL["TRACKING_MIN_USD"],
+            hours_lookback=_PL["TRACKING_HOURS_LOOKBACK"]
         )
         step_times['tracking'] = time.time() - step1_start
-        print(f"\n✅ Étape 1 terminée en {step_times['tracking']:.2f}s ({step_times['tracking']/60:.1f} min)")
+        logger.info(
+            "✅ Étape 1 terminée en %.2fs (%.1f min)",
+            step_times['tracking'],
+            step_times['tracking'] / 60
+        )
     except Exception as e:
-        print(f"\n❌ Erreur lors du tracking live: {e}")
+        logger.error("❌ Erreur lors du tracking live: %s", e)
         return False
 
-    print("\n⏸️ Pause de 5 secondes...\n")
-    time.sleep(5)
+    logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_AFTER_TRACKING_SECONDS"])
+    time.sleep(_SW["PAUSE_AFTER_TRACKING_SECONDS"])
 
-    # ==========================================
-    # ÉTAPE 2: FIFO SMART WALLETS
-    # ==========================================
-    print("=" * 80)
-    print("🧮 ÉTAPE 2/5: ANALYSE FIFO SMART WALLETS")
-    print("=" * 80 + "\n")
+    _log_section("🧮 ÉTAPE 2/6: ANALYSE FIFO SMART WALLETS")
 
     step2_start = time.time()
     try:
@@ -75,95 +94,110 @@ def run_tracking_and_fifo_pipeline():
         step_times['fifo'] = time.time() - step2_start
 
         if result:
-            print(f"\n✅ Étape 2 terminée en {step_times['fifo']:.2f}s ({step_times['fifo']/60:.1f} min)")
+            logger.info(
+                "✅ Étape 2 terminée en %.2fs (%.1f min)",
+                step_times['fifo'],
+                step_times['fifo'] / 60
+            )
         else:
-            print(f"\n⚠️ Étape 2 terminée avec des avertissements")
+            logger.warning("⚠️ Étape 2 terminée avec des avertissements")
     except Exception as e:
-        print(f"\n❌ Erreur lors de l'analyse FIFO: {e}")
+        logger.error("❌ Erreur lors de l'analyse FIFO: %s", e)
         return False
 
-    print("\n⏸️ Pause de 3 secondes...\n")
-    time.sleep(3)
+    logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_BETWEEN_STEPS_SECONDS"])
+    time.sleep(_SW["PAUSE_BETWEEN_STEPS_SECONDS"])
 
-    # ==========================================
-    # ÉTAPE 3: SCORING DES WALLETS
-    # ==========================================
-    print("=" * 80)
-    print("⭐ ÉTAPE 3/5: SCORING DES WALLETS")
-    print("=" * 80 + "\n")
+    _log_section("⭐ ÉTAPE 3/6: SCORING DES WALLETS")
 
     step3_start = time.time()
     try:
-        scored_wallets = score_all_wallets(min_score=20)
+        scored_wallets = score_all_wallets(min_score=_PL["SCORING_MIN_SCORE_DEFAULT"])
 
         if scored_wallets:
             save_qualified_wallets(scored_wallets)
             step_times['scoring'] = time.time() - step3_start
-            print(f"\n✅ Étape 3 terminée en {step_times['scoring']:.2f}s")
-            print(f"   {len(scored_wallets)} wallets qualifiés")
+            logger.info("✅ Étape 3 terminée en %.2fs", step_times['scoring'])
+            logger.info("%s wallets qualifiés", len(scored_wallets))
         else:
-            print(f"\n⚠️ Aucun wallet qualifié")
+            logger.warning("⚠️ Aucun wallet qualifié")
             step_times['scoring'] = time.time() - step3_start
     except Exception as e:
-        print(f"\n❌ Erreur lors du scoring: {e}")
+        logger.error("❌ Erreur lors du scoring: %s", e)
         return False
 
-    print("\n⏸️ Pause de 3 secondes...\n")
-    time.sleep(3)
+    logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_BETWEEN_STEPS_SECONDS"])
+    time.sleep(_SW["PAUSE_BETWEEN_STEPS_SECONDS"])
 
-    # ==========================================
-    # ÉTAPE 4: ANALYSE SIMPLE PAR PALIERS
-    # ==========================================
-    print("=" * 80)
-    print("📊 ÉTAPE 4/5: ANALYSE PAR PALIERS (3K-12K)")
-    print("=" * 80 + "\n")
+    _log_section("📊 ÉTAPE 4/6: ANALYSE PAR PALIERS (3K-12K)")
 
     step4_start = time.time()
     try:
         analyze_qualified_wallets()
         step_times['paliers'] = time.time() - step4_start
-        print(f"\n✅ Étape 4 terminée en {step_times['paliers']:.2f}s ({step_times['paliers']/60:.1f} min)")
+        logger.info(
+            "✅ Étape 4 terminée en %.2fs (%.1f min)",
+            step_times['paliers'],
+            step_times['paliers'] / 60
+        )
     except Exception as e:
-        print(f"\n❌ Erreur lors de l'analyse par paliers: {e}")
+        logger.error("❌ Erreur lors de l'analyse par paliers: %s", e)
         return False
 
-    print("\n⏸️ Pause de 3 secondes...\n")
-    time.sleep(3)
+    logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_BETWEEN_STEPS_SECONDS"])
+    time.sleep(_SW["PAUSE_BETWEEN_STEPS_SECONDS"])
 
-    # ==========================================
-    # ÉTAPE 5: ANALYSE SEUILS OPTIMAUX
-    # ==========================================
-    print("=" * 80)
-    print("🎯 ÉTAPE 5/5: ANALYSE DES SEUILS OPTIMAUX")
-    print("=" * 80 + "\n")
+    _log_section("🎯 ÉTAPE 5/6: ANALYSE DES SEUILS OPTIMAUX")
 
     step5_start = time.time()
     try:
         analyzer = OptimalThresholdAnalyzer()
-        results = analyzer.analyze_all_qualified_wallets(quality_filter=0.0)
+        analyzer.analyze_all_qualified_wallets(quality_filter=_SW["QUALITY_FILTER"])
         step_times['seuils'] = time.time() - step5_start
-        print(f"\n✅ Étape 5 terminée en {step_times['seuils']:.2f}s ({step_times['seuils']/60:.1f} min)")
+        logger.info(
+            "✅ Étape 5 terminée en %.2fs (%.1f min)",
+            step_times['seuils'],
+            step_times['seuils'] / 60
+        )
     except Exception as e:
-        print(f"\n❌ Erreur lors de l'analyse des seuils: {e}")
+        logger.error("❌ Erreur lors de l'analyse des seuils: %s", e)
         return False
 
-    # ==========================================
-    # RÉSUMÉ FINAL
-    # ==========================================
+    logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_BETWEEN_STEPS_SECONDS"])
+    time.sleep(_SW["PAUSE_BETWEEN_STEPS_SECONDS"])
+
+    _log_section("🔍 ÉTAPE 6/6: DÉTECTION CONSENSUS LIVE")
+
+    step6_start = time.time()
+    try:
+        signals = run_live_consensus_detection()
+        if signals:
+            telegram_data = _build_telegram_data(signals)
+            sent = send_consensus_to_telegram(telegram_data)
+            if sent:
+                logger.info("✅ Telegram: %s signal(s) envoyé(s)", len(telegram_data))
+            else:
+                logger.error("❌ Telegram: échec d'envoi des signaux")
+        else:
+            logger.info("ℹ️ Aucun nouveau consensus: aucun envoi Telegram")
+        step_times['consensus'] = time.time() - step6_start
+        logger.info("✅ Étape 6 terminée en %.2fs (%.1f min)", step_times['consensus'], step_times['consensus'] / 60)
+    except Exception as e:
+        logger.error("❌ Erreur lors du consensus live: %s", e)
+        return False
+
     total_duration = time.time() - start_time
 
-    print("\n" + "=" * 80)
-    print("🏆 PIPELINE COMPLET TERMINÉ")
-    print("=" * 80)
-    print(f"⏱️ Durée totale: {total_duration:.2f}s ({total_duration/60:.1f} min)")
-    print(f"\n📋 Détail des étapes:")
-    print(f"   • Étape 1 (Tracking):  {step_times['tracking']:.2f}s ({step_times['tracking']/60:.1f} min)")
-    print(f"   • Étape 2 (FIFO):      {step_times['fifo']:.2f}s ({step_times['fifo']/60:.1f} min)")
-    print(f"   • Étape 3 (Scoring):   {step_times['scoring']:.2f}s")
-    print(f"   • Étape 4 (Paliers):   {step_times['paliers']:.2f}s ({step_times['paliers']/60:.1f} min)")
-    print(f"   • Étape 5 (Seuils):    {step_times['seuils']:.2f}s ({step_times['seuils']/60:.1f} min)")
-    print(f"\n⏰ Fin: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 80 + "\n")
+    _log_section("🏆 PIPELINE COMPLET TERMINÉ")
+    logger.info("⏱️ Durée totale: %.2fs (%.1f min)", total_duration, total_duration / 60)
+    logger.info("📋 Détail des étapes:")
+    logger.info("• Étape 1 (Tracking): %.2fs (%.1f min)", step_times['tracking'], step_times['tracking'] / 60)
+    logger.info("• Étape 2 (FIFO): %.2fs (%.1f min)", step_times['fifo'], step_times['fifo'] / 60)
+    logger.info("• Étape 3 (Scoring): %.2fs", step_times['scoring'])
+    logger.info("• Étape 4 (Paliers): %.2fs (%.1f min)", step_times['paliers'], step_times['paliers'] / 60)
+    logger.info("• Étape 5 (Seuils): %.2fs (%.1f min)", step_times['seuils'], step_times['seuils'] / 60)
+    logger.info("• Étape 6 (Consensus): %.2fs (%.1f min)", step_times['consensus'], step_times['consensus'] / 60)
+    logger.info("⏰ Fin: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
     return True
 
@@ -173,8 +207,8 @@ if __name__ == "__main__":
         success = run_tracking_and_fifo_pipeline()
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:
-        print("\n\n⚠️ Pipeline interrompu par l'utilisateur")
+        logger.warning("⚠️ Pipeline interrompu par l'utilisateur")
         sys.exit(1)
     except Exception as e:
-        print(f"\n\n❌ Erreur fatale: {e}")
+        logger.error("❌ Erreur fatale: %s", e)
         sys.exit(1)

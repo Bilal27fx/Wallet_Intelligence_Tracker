@@ -14,22 +14,25 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
+from smart_wallet_analysis.logger import get_logger
+
 
 DB_PATH = Path(__file__).parent.parent / "data" / "db" / "wit_database.db"
+logger = get_logger("db.create_tokens_discovered_table")
 
 
 def create_tokens_discovered_table():
     """Crée la table tokens_discovered si elle n'existe pas"""
 
-    print("=" * 80)
-    print("📊 CRÉATION TABLE: tokens_discovered")
-    print("=" * 80)
-    print(f"📁 Base: {DB_PATH}")
-    print(f"⏰ Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print()
+    logger.info("=" * 80)
+    logger.info("📊 CRÉATION TABLE: tokens_discovered")
+    logger.info("=" * 80)
+    logger.info(f"📁 Base: {DB_PATH}")
+    logger.info(f"⏰ Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("")
 
     if not DB_PATH.exists():
-        print(f"❌ Base de données introuvable: {DB_PATH}")
+        logger.info(f"❌ Base de données introuvable: {DB_PATH}")
         return False
 
     conn = sqlite3.connect(DB_PATH)
@@ -42,33 +45,33 @@ def create_tokens_discovered_table():
     """)
 
     if cursor.fetchone():
-        print("⚠️  La table 'tokens_discovered' existe déjà")
-        print()
+        logger.info("⚠️  La table 'tokens_discovered' existe déjà")
+        logger.info("")
 
         # Afficher le schéma existant
         cursor.execute("PRAGMA table_info(tokens_discovered)")
         columns = cursor.fetchall()
 
-        print("📋 Schéma actuel:")
+        logger.info("📋 Schéma actuel:")
         for col in columns:
-            print(f"   • {col[1]:<25} {col[2]:<15} {'NOT NULL' if col[3] else ''}")
+            logger.info(f"   • {col[1]:<25} {col[2]:<15} {'NOT NULL' if col[3] else ''}")
 
         conn.close()
 
         response = input("\nVoulez-vous recréer la table ? (oui/non) : ").strip().lower()
         if response not in ['oui', 'o', 'yes', 'y']:
-            print("❌ Opération annulée")
+            logger.info("❌ Opération annulée")
             return False
 
         # Supprimer l'ancienne table
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DROP TABLE tokens_discovered")
-        print("🗑️  Ancienne table supprimée")
-        print()
+        logger.info("🗑️  Ancienne table supprimée")
+        logger.info("")
 
-    print("🔧 Création de la table tokens_discovered...")
-    print()
+    logger.info("🔧 Création de la table tokens_discovered...")
+    logger.info("")
 
     # Créer la table
     cursor.execute("""
@@ -123,7 +126,7 @@ def create_tokens_discovered_table():
     """)
 
     # Index pour performances
-    print("🔧 Création des index...")
+    logger.info("🔧 Création des index...")
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_tokens_discovered_symbol
         ON tokens_discovered(symbol)
@@ -152,15 +155,15 @@ def create_tokens_discovered_table():
     # Commit et fermeture
     conn.commit()
 
-    print("✅ Table créée avec succès!")
-    print()
+    logger.info("✅ Table créée avec succès!")
+    logger.info("")
 
     # Afficher le schéma
     cursor.execute("PRAGMA table_info(tokens_discovered)")
     columns = cursor.fetchall()
 
-    print("📋 Schéma de la table tokens_discovered:")
-    print()
+    logger.info("📋 Schéma de la table tokens_discovered:")
+    logger.info("")
     for col in columns:
         cid, name, type_, notnull, default, pk = col
         constraints = []
@@ -172,23 +175,23 @@ def create_tokens_discovered_table():
             constraints.append(f"DEFAULT {default}")
 
         constraint_str = f" ({', '.join(constraints)})" if constraints else ""
-        print(f"   {cid+1:2d}. {name:<25} {type_:<15} {constraint_str}")
+        logger.info(f"   {cid+1:2d}. {name:<25} {type_:<15} {constraint_str}")
 
-    print()
-    print(f"📊 Index créés: 5")
-    print()
+    logger.info("")
+    logger.info(f"📊 Index créés: 5")
+    logger.info("")
 
     conn.close()
 
-    print("=" * 80)
-    print("✅ MIGRATION TERMINÉE")
-    print("=" * 80)
-    print()
-    print("📝 Prochaines étapes:")
-    print("   1. Modifier le module token_discovery pour insérer dans cette table")
-    print("   2. Lancer le Discovery Pipeline:")
-    print("      python smart_wallet_analysis/discovery_pipeline_runner.py")
-    print()
+    logger.info("=" * 80)
+    logger.info("✅ MIGRATION TERMINÉE")
+    logger.info("=" * 80)
+    logger.info("")
+    logger.info("📝 Prochaines étapes:")
+    logger.info("   1. Modifier le module token_discovery pour insérer dans cette table")
+    logger.info("   2. Lancer le Discovery Pipeline:")
+    logger.info("      python smart_wallet_analysis/discovery_pipeline_runner.py")
+    logger.info("")
 
     return True
 
@@ -197,7 +200,7 @@ def show_table_info():
     """Affiche les informations sur la table tokens_discovered"""
 
     if not DB_PATH.exists():
-        print(f"❌ Base de données introuvable: {DB_PATH}")
+        logger.info(f"❌ Base de données introuvable: {DB_PATH}")
         return
 
     conn = sqlite3.connect(DB_PATH)
@@ -210,7 +213,7 @@ def show_table_info():
     """)
 
     if not cursor.fetchone():
-        print("⚠️  La table 'tokens_discovered' n'existe pas")
+        logger.info("⚠️  La table 'tokens_discovered' n'existe pas")
         conn.close()
         return
 
@@ -218,12 +221,12 @@ def show_table_info():
     cursor.execute("SELECT COUNT(*) FROM tokens_discovered")
     count = cursor.fetchone()[0]
 
-    print("=" * 80)
-    print("📊 INFORMATIONS TABLE: tokens_discovered")
-    print("=" * 80)
-    print(f"📁 Base: {DB_PATH}")
-    print(f"📊 Nombre d'enregistrements: {count:,}")
-    print()
+    logger.info("=" * 80)
+    logger.info("📊 INFORMATIONS TABLE: tokens_discovered")
+    logger.info("=" * 80)
+    logger.info(f"📁 Base: {DB_PATH}")
+    logger.info(f"📊 Nombre d'enregistrements: {count:,}")
+    logger.info("")
 
     if count > 0:
         # Statistiques
@@ -240,17 +243,17 @@ def show_table_info():
 
         stats = cursor.fetchone()
 
-        print("📈 Statistiques:")
-        print(f"   • Tokens uniques: {stats[0]}")
-        print(f"   • Périodes: {stats[1]}")
-        print(f"   • Avec contrats: {stats[2]}")
-        print(f"   • Wallets extraits: {stats[3]}")
-        print(f"   • Première découverte: {stats[4]}")
-        print(f"   • Dernière découverte: {stats[5]}")
-        print()
+        logger.info("📈 Statistiques:")
+        logger.info(f"   • Tokens uniques: {stats[0]}")
+        logger.info(f"   • Périodes: {stats[1]}")
+        logger.info(f"   • Avec contrats: {stats[2]}")
+        logger.info(f"   • Wallets extraits: {stats[3]}")
+        logger.info(f"   • Première découverte: {stats[4]}")
+        logger.info(f"   • Dernière découverte: {stats[5]}")
+        logger.info("")
 
         # Top 10
-        print("🏆 Top 10 tokens récents:")
+        logger.info("🏆 Top 10 tokens récents:")
         cursor.execute("""
             SELECT symbol, name, discovery_period,
                    ROUND(price_change_30d, 2) as perf_30d,
@@ -261,10 +264,10 @@ def show_table_info():
         """)
 
         for row in cursor.fetchall():
-            print(f"   • {row[0]:8} {row[1]:20} ({row[2]:4}) +{row[3]:6}% - {row[4]}")
+            logger.info(f"   • {row[0]:8} {row[1]:20} ({row[2]:4}) +{row[3]:6}% - {row[4]}")
 
     conn.close()
-    print("=" * 80)
+    logger.info("=" * 80)
 
 
 if __name__ == "__main__":
@@ -277,10 +280,10 @@ if __name__ == "__main__":
             success = create_tokens_discovered_table()
             sys.exit(0 if success else 1)
         except KeyboardInterrupt:
-            print("\n⚠️  Opération annulée")
+            logger.info("\n⚠️  Opération annulée")
             sys.exit(1)
         except Exception as e:
-            print(f"\n❌ Erreur: {e}")
+            logger.info(f"\n❌ Erreur: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)

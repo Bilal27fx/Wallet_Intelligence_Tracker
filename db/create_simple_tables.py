@@ -6,8 +6,11 @@ Script simple pour créer les tables SQLite
 import sqlite3
 from pathlib import Path
 
+from smart_wallet_analysis.logger import get_logger
+
 # Chemin vers le fichier SQLite
 SQLITE_PATH = Path(__file__).parent.parent / "data" / "db" / "wit_database.db"
+logger = get_logger("db.create_simple_tables")
 
 def create_tables():
     """Crée les tables directement en SQLite"""
@@ -17,9 +20,9 @@ def create_tables():
     
     # Conserver l'ancienne base et ajouter les nouvelles tables
     if SQLITE_PATH.exists():
-        print(f"📂 Base existante détectée, ajout des nouvelles tables seulement")
+        logger.info(f"📂 Base existante détectée, ajout des nouvelles tables seulement")
     else:
-        print(f"📂 Création d'une nouvelle base")
+        logger.info(f"📂 Création d'une nouvelle base")
     
     conn = sqlite3.connect(str(SQLITE_PATH))
     cursor = conn.cursor()
@@ -37,7 +40,7 @@ def create_tables():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
-    print("✅ Table wallets créée")
+    logger.info("✅ Table wallets créée")
     
     # Table tokens
     cursor.execute("""
@@ -81,8 +84,8 @@ def create_tables():
         UNIQUE(hash, wallet_address, fungible_id)
     );
     """)
-    print("✅ Table tokens créée")
-    print("✅ Table transaction_history créée")
+    logger.info("✅ Table tokens créée")
+    logger.info("✅ Table transaction_history créée")
     
     
     # Index pour les performances
@@ -125,7 +128,7 @@ def create_tables():
         UNIQUE(session_id, wallet_address, symbol, change_type)
     );
     """)
-    print("✅ Table wallet_position_changes créée")
+    logger.info("✅ Table wallet_position_changes créée")
     
     # Table wallet_brute pour remplacer les CSV top_wallets
     cursor.execute("""
@@ -142,7 +145,7 @@ def create_tables():
         UNIQUE(wallet_address, token_address, temporality)
     );
     """)
-    print("✅ Table wallet_brute créée")
+    logger.info("✅ Table wallet_brute créée")
     
     # Table smart_wallets (référence pour les jointures)
     cursor.execute("""
@@ -155,7 +158,7 @@ def create_tables():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
-    print("✅ Table smart_wallets créée")
+    logger.info("✅ Table smart_wallets créée")
     
     # Index pour performance des nouvelles tables
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_wallet_brute_token ON wallet_brute(token_address);")
@@ -195,7 +198,7 @@ def create_tables():
         UNIQUE(contract_address, price_date)
     );
     """)
-    print("✅ Table consensus_prices créée")
+    logger.info("✅ Table consensus_prices créée")
     
     # Index pour consensus_prices
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_consensus_prices_contract ON consensus_prices(contract_address);")
@@ -203,12 +206,12 @@ def create_tables():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_consensus_prices_date ON consensus_prices(price_date);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_consensus_prices_consensus_date ON consensus_prices(consensus_date);")
     
-    print("✅ Index créés")
+    logger.info("✅ Index créés")
     
     conn.commit()
     conn.close()
     
-    print(f"✅ Base SQLite créée: {SQLITE_PATH}")
+    logger.info(f"✅ Base SQLite créée: {SQLITE_PATH}")
     
     # Test rapide
     conn = sqlite3.connect(str(SQLITE_PATH))
@@ -217,9 +220,9 @@ def create_tables():
     tables = cursor.fetchall()
     conn.close()
     
-    print(f"📋 Tables créées: {len(tables)}")
+    logger.info(f"📋 Tables créées: {len(tables)}")
     for table in tables:
-        print(f"   • {table[0]}")
+        logger.info(f"   • {table[0]}")
 
 if __name__ == "__main__":
     create_tables()

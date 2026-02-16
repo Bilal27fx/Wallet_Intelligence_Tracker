@@ -1,6 +1,7 @@
-flask
+numpy
 pandas
-requests
 python-dotenv
-selenium
-beautifulsoup4
+PyYAML
+requests
+schedule
+urllib3

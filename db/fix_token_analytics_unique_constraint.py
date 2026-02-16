@@ -8,17 +8,20 @@ to allow multiple tokens with the same symbol but different contract addresses.
 import sqlite3
 from pathlib import Path
 
+from smart_wallet_analysis.logger import get_logger
+
 # Configuration
 DB_PATH = Path(__file__).parent.parent / "data" / "db" / "wit_database.db"
+logger = get_logger("db.fix_token_analytics_unique_constraint")
 
 def fix_token_analytics_unique_constraint():
     """Fix the unique constraint in token_analytics table"""
     
-    print("🔧 === MIGRATION: FIX TOKEN_ANALYTICS UNIQUE CONSTRAINT ===")
-    print("📋 Problème: Contrainte UNIQUE(wallet_address, token_symbol) empêche")
-    print("📋 de sauvegarder plusieurs tokens avec le même symbole mais différents contrats")
-    print("📋 Solution: Changer vers UNIQUE(wallet_address, contract_address)")
-    print("=" * 80)
+    logger.info("🔧 === MIGRATION: FIX TOKEN_ANALYTICS UNIQUE CONSTRAINT ===")
+    logger.info("📋 Problème: Contrainte UNIQUE(wallet_address, token_symbol) empêche")
+    logger.info("📋 de sauvegarder plusieurs tokens avec le même symbole mais différents contrats")
+    logger.info("📋 Solution: Changer vers UNIQUE(wallet_address, contract_address)")
+    logger.info("=" * 80)
     
     try:
         # Connexion à la base
@@ -26,30 +29,30 @@ def fix_token_analytics_unique_constraint():
         cursor = conn.cursor()
         
         # 1. Vérifier l'état actuel de la table
-        print("🔍 Vérification de l'état actuel...")
+        logger.info("🔍 Vérification de l'état actuel...")
         cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='token_analytics'")
         current_schema = cursor.fetchone()
         
         if current_schema:
-            print(f"📋 Schéma actuel trouvé")
+            logger.info(f"📋 Schéma actuel trouvé")
             if "UNIQUE(wallet_address, token_symbol)" in current_schema[0]:
-                print("❌ Contrainte problématique détectée: UNIQUE(wallet_address, token_symbol)")
+                logger.info("❌ Contrainte problématique détectée: UNIQUE(wallet_address, token_symbol)")
             elif "UNIQUE(wallet_address, contract_address)" in current_schema[0]:
-                print("✅ Contrainte correcte déjà en place: UNIQUE(wallet_address, contract_address)")
-                print("🎯 Aucune migration nécessaire!")
+                logger.info("✅ Contrainte correcte déjà en place: UNIQUE(wallet_address, contract_address)")
+                logger.info("🎯 Aucune migration nécessaire!")
                 conn.close()
                 return True
             else:
-                print("⚠️ Contrainte UNIQUE non trouvée dans le schéma")
+                logger.info("⚠️ Contrainte UNIQUE non trouvée dans le schéma")
         else:
-            print("❌ Table token_analytics non trouvée!")
+            logger.info("❌ Table token_analytics non trouvée!")
             conn.close()
             return False
         
         # 2. Compter les données existantes
         cursor.execute("SELECT COUNT(*) FROM token_analytics")
         total_records = cursor.fetchone()[0]
-        print(f"📊 {total_records} enregistrements existants dans token_analytics")
+        logger.info(f"📊 {total_records} enregistrements existants dans token_analytics")
         
         # 3. Identifier les conflits potentiels
         cursor.execute("""
@@ -61,9 +64,9 @@ def fix_token_analytics_unique_constraint():
         conflicts = cursor.fetchall()
         
         if conflicts:
-            print(f"⚠️ {len(conflicts)} conflits détectés (même wallet + même symbol):")
+            logger.info(f"⚠️ {len(conflicts)} conflits détectés (même wallet + même symbol):")
             for wallet, symbol, count in conflicts:
-                print(f"   - {wallet[:12]}... + {symbol}: {count} entrées")
+                logger.info(f"   - {wallet[:12]}... + {symbol}: {count} entrées")
                 
                 # Afficher les détails des conflits
                 cursor.execute("""
@@ -73,12 +76,12 @@ def fix_token_analytics_unique_constraint():
                 """, (wallet, symbol))
                 details = cursor.fetchall()
                 for i, (contract, invested, current) in enumerate(details, 1):
-                    print(f"     {i}. Contract: {contract[:12]}... | Investi: ${invested:,.0f} | Actuel: ${current:,.0f}")
+                    logger.info(f"     {i}. Contract: {contract[:12]}... | Investi: ${invested:,.0f} | Actuel: ${current:,.0f}")
         else:
-            print("✅ Aucun conflit détecté")
+            logger.info("✅ Aucun conflit détecté")
         
         # 4. Créer la nouvelle table avec la contrainte corrigée
-        print("\n🔨 Création de la nouvelle table...")
+        logger.info("\n🔨 Création de la nouvelle table...")
         cursor.execute("""
             CREATE TABLE token_analytics_new (
                 id INTEGER PRIMARY KEY,
@@ -141,10 +144,10 @@ def fix_token_analytics_unique_constraint():
                 UNIQUE(wallet_address, contract_address)
             )
         """)
-        print("✅ Nouvelle table créée avec contrainte UNIQUE(wallet_address, contract_address)")
+        logger.info("✅ Nouvelle table créée avec contrainte UNIQUE(wallet_address, contract_address)")
         
         # 5. Copier les données en gérant les doublons
-        print("📋 Migration des données...")
+        logger.info("📋 Migration des données...")
         
         # Copier toutes les données, la nouvelle contrainte gérera les doublons automatiquement
         cursor.execute("""
@@ -153,17 +156,17 @@ def fix_token_analytics_unique_constraint():
         """)
         
         migrated_count = cursor.rowcount
-        print(f"✅ {migrated_count} enregistrements migrés")
+        logger.info(f"✅ {migrated_count} enregistrements migrés")
         
         # 6. Vérifier que toutes les données importantes ont été migrées
         cursor.execute("SELECT COUNT(*) FROM token_analytics_new")
         new_total = cursor.fetchone()[0]
         
-        print(f"📊 Avant: {total_records} enregistrements")
-        print(f"📊 Après: {new_total} enregistrements")
+        logger.info(f"📊 Avant: {total_records} enregistrements")
+        logger.info(f"📊 Après: {new_total} enregistrements")
         
         if new_total < total_records:
-            print(f"⚠️ {total_records - new_total} enregistrements perdus (doublons supprimés)")
+            logger.info(f"⚠️ {total_records - new_total} enregistrements perdus (doublons supprimés)")
             
             # Identifier quels enregistrements ont été perdus
             cursor.execute("""
@@ -176,17 +179,17 @@ def fix_token_analytics_unique_constraint():
             lost_records = cursor.fetchall()
             
             if lost_records:
-                print("📋 Enregistrements perdus (doublons):")
+                logger.info("📋 Enregistrements perdus (doublons):")
                 for wallet, symbol, contract, invested in lost_records:
-                    print(f"   - {wallet[:12]}... | {symbol} | {contract[:12]}... | ${invested:,.0f}")
+                    logger.info(f"   - {wallet[:12]}... | {symbol} | {contract[:12]}... | ${invested:,.0f}")
         
         # 7. Remplacer l'ancienne table par la nouvelle
-        print("\n🔄 Remplacement de l'ancienne table...")
+        logger.info("\n🔄 Remplacement de l'ancienne table...")
         cursor.execute("DROP TABLE token_analytics")
         cursor.execute("ALTER TABLE token_analytics_new RENAME TO token_analytics")
         
         # 8. Créer les index pour les performances
-        print("🏗️ Création des index...")
+        logger.info("🏗️ Création des index...")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_token_analytics_wallet ON token_analytics(wallet_address)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_token_analytics_symbol ON token_analytics(token_symbol)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_token_analytics_contract ON token_analytics(contract_address)")
@@ -194,14 +197,14 @@ def fix_token_analytics_unique_constraint():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_token_analytics_portfolio ON token_analytics(in_portfolio)")
         
         # 9. Valider la migration
-        print("\n🔍 Validation de la migration...")
+        logger.info("\n🔍 Validation de la migration...")
         cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='token_analytics'")
         new_schema = cursor.fetchone()[0]
         
         if "UNIQUE(wallet_address, contract_address)" in new_schema:
-            print("✅ Contrainte UNIQUE correctement mise à jour!")
+            logger.info("✅ Contrainte UNIQUE correctement mise à jour!")
         else:
-            print("❌ Erreur: contrainte UNIQUE non trouvée dans le nouveau schéma")
+            logger.info("❌ Erreur: contrainte UNIQUE non trouvée dans le nouveau schéma")
             conn.rollback()
             conn.close()
             return False
@@ -210,16 +213,16 @@ def fix_token_analytics_unique_constraint():
         conn.commit()
         conn.close()
         
-        print("\n🎉 === MIGRATION TERMINÉE AVEC SUCCÈS ===")
-        print("✅ La table token_analytics utilise maintenant UNIQUE(wallet_address, contract_address)")
-        print("✅ Les tokens avec le même symbole mais différents contrats peuvent maintenant être sauvegardés")
-        print("✅ Exemple: 2 tokens RUSSELL avec différents contract_address pour le même wallet")
-        print("=" * 80)
+        logger.info("\n🎉 === MIGRATION TERMINÉE AVEC SUCCÈS ===")
+        logger.info("✅ La table token_analytics utilise maintenant UNIQUE(wallet_address, contract_address)")
+        logger.info("✅ Les tokens avec le même symbole mais différents contrats peuvent maintenant être sauvegardés")
+        logger.info("✅ Exemple: 2 tokens RUSSELL avec différents contract_address pour le même wallet")
+        logger.info("=" * 80)
         
         return True
         
     except Exception as e:
-        print(f"❌ Erreur durant la migration: {e}")
+        logger.info(f"❌ Erreur durant la migration: {e}")
         import traceback
         traceback.print_exc()
         
@@ -232,7 +235,7 @@ def fix_token_analytics_unique_constraint():
 if __name__ == "__main__":
     success = fix_token_analytics_unique_constraint()
     if success:
-        print("\n🎯 Migration réussie! Vous pouvez maintenant relancer l'analyse du wallet.")
-        print("🔄 Les 2 tokens RUSSELL seront maintenant correctement sauvegardés.")
+        logger.info("\n🎯 Migration réussie! Vous pouvez maintenant relancer l'analyse du wallet.")
+        logger.info("🔄 Les 2 tokens RUSSELL seront maintenant correctement sauvegardés.")
     else:
-        print("\n❌ Migration échouée. Vérifiez les erreurs ci-dessus.")
+        logger.info("\n❌ Migration échouée. Vérifiez les erreurs ci-dessus.")

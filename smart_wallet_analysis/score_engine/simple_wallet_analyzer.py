@@ -1,74 +1,58 @@
 #!/usr/bin/env python3
-"""
-ANALYSEUR SIMPLE - PALIERS 3K-12K - WALLETS QUALIFIÉS UNIQUEMENT
-Calcul et affichage pour chaque wallet QUALIFIÉ :
-- ROI
-- Taux de réussite
-- Nombre de trades
-- Trades gagnants (≥50%)
-- Trades perdants (<-20%)
-- Trades neutres (-20% à 50% - bruit de marché)
-Pour chaque palier de 3K à 12K par pas de 1000€
-Utilise uniquement les wallets de la table wallet_qualified
-"""
+"""Analyse simple par paliers pour wallets qualifiés."""
 
 import sqlite3
-from pathlib import Path
 
-# Configuration
-ROOT_DIR = Path(__file__).parent.parent.parent
-DB_PATH = ROOT_DIR / "data" / "db" / "wit_database.db"
+from smart_wallet_analysis.config import DB_PATH, SCORE_ENGINE
+from smart_wallet_analysis.logger import get_logger
+
+logger = get_logger("score_engine.tier_analysis")
+
+_TA = SCORE_ENGINE["TIER_ANALYSIS"]
+_EXCLUDED = SCORE_ENGINE["EXCLUDED_TOKENS"]
+_EXCLUDED_PLACEHOLDERS = ",".join("?" * len(_EXCLUDED))
 
 def analyze_wallet_simple(wallet_address):
-    """Analyse simple d'un wallet qualifié sur tous les paliers"""
-    
-    # Récupérer les données du wallet
+    """Analyse simple d'un wallet qualifié sur tous les paliers."""
     conn = sqlite3.connect(DB_PATH)
-    query = """
+    query = f"""
         SELECT token_symbol, total_invested, roi_percentage
         FROM token_analytics
         WHERE wallet_address = ?
-        AND token_symbol NOT IN ('USDC', 'USDT', 'DAI', 'USDAI', 'BUSD', 'ETH', 'WETH', 'BTC', 'WBTC', 'BNB')
+        AND token_symbol NOT IN ({_EXCLUDED_PLACEHOLDERS})
         ORDER BY total_invested DESC
     """
-    tokens = conn.execute(query, [wallet_address]).fetchall()
+    tokens = conn.execute(query, [wallet_address, *_EXCLUDED]).fetchall()
     conn.close()
-    
+
     if not tokens:
-        print("❌ Aucun token trouvé")
+        logger.warning(f"Aucun token trouvé pour {wallet_address[:12]}...")
         return
-    
-    # Stocker les résultats pour sauvegarde
+
     tier_results = {}
-    
-    # Analyser chaque palier (commence à 1K au lieu de 3K)
-    for tier in range(1000, 13000, 1000):
-        # Filtrer tokens pour ce palier
+    tier_range = range(_TA["TIER_START_USD"], _TA["TIER_END_USD"] + _TA["TIER_STEP_USD"], _TA["TIER_STEP_USD"])
+
+    for tier in tier_range:
         tier_tokens = [t for t in tokens if t[1] >= tier]
-        
+
         if not tier_tokens:
             tier_results[f"tier_{tier//1000}k"] = {
                 'roi': 0, 'taux_reussite': 0, 'nb_trades': 0,
                 'gagnants': 0, 'perdants': 0, 'neutres': 0
             }
             continue
-            
-        # Calculs
+
         nb_trades = len(tier_tokens)
 
-        # Classification
-        gagnants = sum(1 for t in tier_tokens if t[2] >= 50)     # >= 50% ROI (vraies victoires)
-        perdants = sum(1 for t in tier_tokens if t[2] < -20)     # < -20% ROI (vraies pertes)
-        neutres = nb_trades - gagnants - perdants                 # -20% à 50% ROI (bruit de marché)
-        
-        # ROI moyen pondéré par investissement
+        gagnants = sum(1 for t in tier_tokens if t[2] >= _TA["WIN_ROI_THRESHOLD"])
+        perdants = sum(1 for t in tier_tokens if t[2] < _TA["LOSS_ROI_THRESHOLD"])
+        neutres = nb_trades - gagnants - perdants
+
         total_invested = sum(t[1] for t in tier_tokens)
         weighted_roi = sum(t[1] * t[2] for t in tier_tokens) / total_invested if total_invested > 0 else 0
-        
-        # Taux de réussite (sur le total de trades, neutres inclus)
+
         taux_reussite = (gagnants / nb_trades * 100) if nb_trades > 0 else 0
-        
-        # Stocker
+
         tier_results[f"tier_{tier//1000}k"] = {
             'roi': weighted_roi,
             'taux_reussite': taux_reussite,
@@ -77,21 +61,15 @@ def analyze_wallet_simple(wallet_address):
             'perdants': perdants,
             'neutres': neutres
         }
-        
-        # Affichage
-        print(f"   Palier {tier//1000}K: ROI={weighted_roi:+.1f}% | Taux={taux_reussite:.1f}% | "
-              f"Trades={nb_trades} | G={gagnants} P={perdants} N={neutres}")
-    
-    # Sauvegarder en base (uniquement pour les wallets qualifiés)
+
+        logger.info(f"  Palier {tier//1000}K: ROI={weighted_roi:+.1f}% Taux={taux_reussite:.1f}% Trades={nb_trades} G={gagnants} P={perdants} N={neutres}")
+
     save_wallet_profile(wallet_address, tier_results)
 
 def analyze_qualified_wallets():
-    """Analyse uniquement les wallets qualifiés"""
-    
-    print("🚀 ANALYSE SIMPLE - WALLETS QUALIFIÉS UNIQUEMENT")
-    print("=" * 80)
-    
-    # Récupérer UNIQUEMENT les wallets qualifiés
+    """Analyse uniquement les wallets qualifiés."""
+    logger.info("ANALYSE SIMPLE - WALLETS QUALIFIÉS UNIQUEMENT")
+
     conn = sqlite3.connect(DB_PATH)
     query = """
         SELECT wallet_address, classification, final_score, weighted_roi
@@ -100,34 +78,27 @@ def analyze_qualified_wallets():
     """
     qualified_wallets = conn.execute(query).fetchall()
     conn.close()
-    
+
     if not qualified_wallets:
-        print("❌ Aucun wallet qualifié trouvé. Exécutez d'abord wallet_scoring_system.py")
+        logger.warning("Aucun wallet qualifié trouvé. Exécutez d'abord wallet_scoring_system.py")
         return
-    
-    print(f"📊 {len(qualified_wallets)} wallets qualifiés à analyser")
-    print(f"🏆 Score moyen des qualifiés: {sum(w[2] for w in qualified_wallets) / len(qualified_wallets):.1f}")
-    print(f"💰 ROI moyen des qualifiés: {sum(w[3] for w in qualified_wallets) / len(qualified_wallets):.1f}%")
-    print()
-    
-    # Analyser chaque wallet qualifié
+
+    logger.info(f"{len(qualified_wallets)} wallets qualifiés | score_moy={sum(w[2] for w in qualified_wallets) / len(qualified_wallets):.1f} roi_moy={sum(w[3] for w in qualified_wallets) / len(qualified_wallets):.1f}%")
+
     for wallet_data in qualified_wallets:
         wallet_address = wallet_data[0]
         classification = wallet_data[1]
         score = wallet_data[2]
-        print(f"🔍 WALLET: {wallet_address} | {classification} | Score: {score:.1f}")
+        logger.info(f"WALLET: {wallet_address} | {classification} | Score: {score:.1f}")
         analyze_wallet_simple(wallet_address)
 
 def save_wallet_profile(wallet_address, tier_results):
-    """Sauvegarde le profil d'un wallet en base"""
-    
+    """Sauvegarde le profil d'un wallet en base."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30.0)
-        
-        # Préparer les données pour l'insert/update
+
         data = [wallet_address]
-        
-        # Ajouter les données pour chaque palier (1k à 12k)
+
         for tier_num in range(1, 13):
             tier_key = f"tier_{tier_num}k"
             if tier_key in tier_results:
@@ -141,10 +112,8 @@ def save_wallet_profile(wallet_address, tier_results):
                     results['neutres']
                 ])
             else:
-                # Valeurs par défaut si pas de données pour ce palier
                 data.extend([0, 0, 0, 0, 0, 0])
-        
-        # Requête INSERT OR REPLACE
+
         query = """
             INSERT OR REPLACE INTO wallet_profiles (
                 wallet_address,
@@ -176,20 +145,20 @@ def save_wallet_profile(wallet_address, tier_results):
                 ?, ?, ?, ?, ?, ?
             )
         """
-        
+
         conn.execute(query, data)
         conn.commit()
         conn.close()
-        
-        print(f"✅ Profil sauvegardé pour {wallet_address}")
-        
+
+        logger.info(f"Profil sauvegardé pour {wallet_address}")
+
     except sqlite3.OperationalError as e:
         if "database is locked" in str(e):
-            print(f"⚠️ Base verrouillée pour {wallet_address}, abandon")
+            logger.warning(f"Base verrouillée pour {wallet_address}, abandon")
         else:
-            print(f"❌ Erreur SQL pour {wallet_address}: {e}")
+            logger.error(f"Erreur SQL pour {wallet_address}: {e}")
     except Exception as e:
-        print(f"❌ Erreur pour {wallet_address}: {e}")
+        logger.error(f"Erreur pour {wallet_address}: {e}")
 
 if __name__ == "__main__":
     analyze_qualified_wallets()

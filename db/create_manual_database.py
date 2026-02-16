@@ -7,8 +7,11 @@ Cette BDD aura la même structure que wit_database.db mais sera vide et dédiée
 import sqlite3
 from pathlib import Path
 
+from smart_wallet_analysis.logger import get_logger
+
 # Chemin vers la nouvelle BDD manuelle
 MANUAL_DB_PATH = Path(__file__).parent.parent / "data" / "db" / "wit_database_manual.db"
+logger = get_logger("db.create_manual_database")
 
 def create_manual_database():
     """Crée la base de données pour les analyses manuelles (copie de structure de wit_database.db)"""
@@ -18,14 +21,14 @@ def create_manual_database():
 
     # Si la BDD existe déjà, demander confirmation
     if MANUAL_DB_PATH.exists():
-        print(f"⚠️  La base manuelle existe déjà : {MANUAL_DB_PATH}")
+        logger.info(f"⚠️  La base manuelle existe déjà : {MANUAL_DB_PATH}")
         response = input("Voulez-vous la recréer (toutes les données seront perdues) ? [y/N]: ")
         if response.lower() != 'y':
-            print("❌ Opération annulée")
+            logger.info("❌ Opération annulée")
             return False
         MANUAL_DB_PATH.unlink()
 
-    print(f"📂 Création de la base manuelle : {MANUAL_DB_PATH}")
+    logger.info(f"📂 Création de la base manuelle : {MANUAL_DB_PATH}")
 
     conn = sqlite3.connect(str(MANUAL_DB_PATH))
     cursor = conn.cursor()
@@ -49,7 +52,7 @@ def create_manual_database():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
-    print("✅ Table wallets créée")
+    logger.info("✅ Table wallets créée")
 
     # Table tokens
     cursor.execute("""
@@ -72,7 +75,7 @@ def create_manual_database():
         UNIQUE(wallet_address, fungible_id)
     );
     """)
-    print("✅ Table tokens créée")
+    logger.info("✅ Table tokens créée")
 
     # Table transaction_history
     cursor.execute("""
@@ -95,7 +98,7 @@ def create_manual_database():
         UNIQUE(hash, wallet_address, fungible_id)
     );
     """)
-    print("✅ Table transaction_history créée")
+    logger.info("✅ Table transaction_history créée")
 
     # Table token_analytics
     cursor.execute("""
@@ -151,7 +154,7 @@ def create_manual_database():
         UNIQUE(wallet_address, token_symbol)
     );
     """)
-    print("✅ Table token_analytics créée")
+    logger.info("✅ Table token_analytics créée")
 
     # Table wallet_profiles
     cursor.execute("""
@@ -221,7 +224,7 @@ def create_manual_database():
         FOREIGN KEY (wallet_address) REFERENCES wallets(wallet_address)
     );
     """)
-    print("✅ Table wallet_profiles créée")
+    logger.info("✅ Table wallet_profiles créée")
 
     # Table smart_wallets (wallets avec score >= 40)
     cursor.execute("""
@@ -292,7 +295,7 @@ def create_manual_database():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
-    print("✅ Table smart_wallets créée")
+    logger.info("✅ Table smart_wallets créée")
 
     # ============================================
     # INDEX POUR PERFORMANCES
@@ -324,12 +327,12 @@ def create_manual_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_smart_wallets_score ON smart_wallets(score_final);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_smart_wallets_total_score ON smart_wallets(total_score);")
 
-    print("✅ Index créés")
+    logger.info("✅ Index créés")
 
     conn.commit()
     conn.close()
 
-    print(f"\n✅ Base de données manuelle créée avec succès : {MANUAL_DB_PATH}")
+    logger.info(f"\n✅ Base de données manuelle créée avec succès : {MANUAL_DB_PATH}")
 
     # Test rapide
     conn = sqlite3.connect(str(MANUAL_DB_PATH))
@@ -338,16 +341,16 @@ def create_manual_database():
     tables = cursor.fetchall()
     conn.close()
 
-    print(f"\n📋 Tables créées : {len(tables)}")
+    logger.info(f"\n📋 Tables créées : {len(tables)}")
     for table in tables:
-        print(f"   • {table[0]}")
+        logger.info(f"   • {table[0]}")
 
-    print(f"\n💡 Cette base de données sera utilisée exclusivement pour les analyses manuelles")
-    print(f"💡 Les analyses automatiques continuent d'utiliser wit_database.db")
+    logger.info(f"\n💡 Cette base de données sera utilisée exclusivement pour les analyses manuelles")
+    logger.info(f"💡 Les analyses automatiques continuent d'utiliser wit_database.db")
 
     return True
 
 if __name__ == "__main__":
-    print("🎯 CRÉATION BASE DE DONNÉES POUR ANALYSES MANUELLES")
-    print("=" * 60)
+    logger.info("🎯 CRÉATION BASE DE DONNÉES POUR ANALYSES MANUELLES")
+    logger.info("=" * 60)
     create_manual_database()

@@ -11,8 +11,11 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Union
 from dotenv import load_dotenv
 
+from smart_wallet_analysis.logger import get_logger
+
 # Charger les variables d'environnement
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
+logger = get_logger("db.database_utils_manual")
 
 # Configuration BDD MANUELLE
 SQLITE_PATH = Path(__file__).parent.parent / "data" / "db" / "wit_database_manual.db"
@@ -32,7 +35,7 @@ class DatabaseManager:
             self.cursor = self.connection.cursor()
             return True
         except Exception as e:
-            print(f"❌ Erreur connexion BDD manuelle: {e}")
+            logger.info(f"❌ Erreur connexion BDD manuelle: {e}")
             return False
 
     def disconnect(self):
@@ -52,7 +55,7 @@ class DatabaseManager:
 
             return [dict(row) for row in self.cursor.fetchall()]
         except Exception as e:
-            print(f"❌ Erreur requête: {e}")
+            logger.info(f"❌ Erreur requête: {e}")
             return []
 
     def execute_update(self, query: str, params: tuple = None) -> int:
@@ -66,7 +69,7 @@ class DatabaseManager:
             self.connection.commit()
             return self.cursor.rowcount
         except Exception as e:
-            print(f"❌ Erreur mise à jour: {e}")
+            logger.info(f"❌ Erreur mise à jour: {e}")
             return 0
 
     def __enter__(self):
@@ -125,10 +128,10 @@ def mark_wallet_transactions_extracted(wallet_address: str) -> bool:
         conn.commit()
         conn.close()
 
-        print(f"✅ Wallet {wallet_address[:10]}... marqué comme traité")
+        logger.info(f"✅ Wallet {wallet_address[:10]}... marqué comme traité")
         return True
     except Exception as e:
-        print(f"❌ Erreur marquage wallet {wallet_address}: {e}")
+        logger.info(f"❌ Erreur marquage wallet {wallet_address}: {e}")
         return False
 
 def mark_wallet_scored(wallet_address: str) -> bool:
@@ -146,10 +149,10 @@ def mark_wallet_scored(wallet_address: str) -> bool:
         conn.commit()
         conn.close()
 
-        print(f"✅ Wallet {wallet_address[:10]}... marqué comme scoré")
+        logger.info(f"✅ Wallet {wallet_address[:10]}... marqué comme scoré")
         return True
     except Exception as e:
-        print(f"❌ Erreur marquage scoring wallet {wallet_address}: {e}")
+        logger.info(f"❌ Erreur marquage scoring wallet {wallet_address}: {e}")
         return False
 
 # =====================================================
@@ -236,10 +239,10 @@ def get_database_stats() -> Dict:
 
 if __name__ == "__main__":
     # Test des fonctions
-    print("🔍 Test des fonctions de base de données MANUELLE")
+    logger.info("🔍 Test des fonctions de base de données MANUELLE")
 
     # Stats
     stats = get_database_stats()
-    print(f"📊 Stats BDD Manuelle: {stats}")
+    logger.info(f"📊 Stats BDD Manuelle: {stats}")
 
-    print("✅ Tests terminés")
+    logger.info("✅ Tests terminés")

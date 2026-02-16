@@ -1,38 +1,30 @@
 #!/usr/bin/env python3
-"""
-ANALYSEUR DE SEUIL OPTIMAL PAR WALLET
-Trouve pour chaque wallet son seuil optimal τ_w et calcule sa qualité q_w
-
-Logique:
-1. Filtrer les paliers peu fiables (ROI>0, WinRate≥20%, Trades≥5)
-2. Calculer score J_t = 0.6·ROI_norm + 0.4·WinRate_lissé + 0.1·log(1+Trades)
-3. Trouver seuil optimal τ_w (plateau stable au 60e percentile)
-4. Calculer qualité q_w basée sur performances au-dessus du seuil
-5. Gérer les wallets "neutres" (q_w < 0.1 ou N < 10)
-"""
+"""Analyseur de seuil optimal par wallet."""
 
 import sqlite3
 import math
 import numpy as np
-from pathlib import Path
 
-# Configuration
-ROOT_DIR = Path(__file__).parent.parent.parent
-DB_PATH = ROOT_DIR / "data" / "db" / "wit_database.db"
+from smart_wallet_analysis.config import DB_PATH, SCORE_ENGINE
+from smart_wallet_analysis.logger import get_logger
+
+logger = get_logger("score_engine.optimal_threshold")
+
+_OT = SCORE_ENGINE["OPTIMAL_THRESHOLD"]
 
 class OptimalThresholdAnalyzer:
     
     def __init__(self):
-        self.alpha_bayesian = 30  # Paramètre lissage bayésien
-        self.min_trades_threshold = 5
-        self.min_winrate_threshold = 20.0
-        self.stability_threshold = 0.15  # Max chute autorisée (15%)
-        self.quality_threshold = 0.1
-        self.min_trades_quality = 10
-        self.filter_quality_min = 0.3# Filtre qualité minimum (0.3 = wallets de qualité acceptable)
+        self.alpha_bayesian = _OT["ALPHA_BAYESIAN"]
+        self.min_trades_threshold = _OT["MIN_TRADES_THRESHOLD"]
+        self.min_winrate_threshold = _OT["MIN_WINRATE_THRESHOLD"]
+        self.stability_threshold = _OT["STABILITY_THRESHOLD"]
+        self.quality_threshold = _OT["QUALITY_THRESHOLD"]
+        self.min_trades_quality = _OT["MIN_TRADES_QUALITY"]
+        self.filter_quality_min = _OT["FILTER_QUALITY_MIN"]
         
     def get_wallet_tier_data(self, wallet_address):
-        """Récupère les données par palier depuis wallet_profiles"""
+        """Récupère les données par palier depuis wallet_profiles."""
         
         conn = sqlite3.connect(DB_PATH)
         query = """
@@ -59,7 +51,6 @@ class OptimalThresholdAnalyzer:
         if not result:
             return None
 
-        # Organiser les données par palier (commence à 1K maintenant)
         tier_data = {}
         tiers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         
@@ -83,31 +74,29 @@ class OptimalThresholdAnalyzer:
         return tier_data
     
     def filter_reliable_tiers(self, tier_data):
-        """Filtre les paliers fiables selon les critères"""
+        """Filtre les paliers fiables selon les critères."""
         
         reliable_tiers = {}
         
         for tier, data in tier_data.items():
-            if (data['roi'] > 70 and
-                data['winrate'] >= self.min_winrate_threshold and 
+            if (data['roi'] > _OT["MIN_RELIABLE_ROI"] and
+                data['winrate'] >= self.min_winrate_threshold and
                 data['trades'] >= self.min_trades_threshold):
                 reliable_tiers[tier] = data
                 
         return reliable_tiers
     
     def calculate_bayesian_winrate(self, winrate, trades):
-        """Calcul du WinRate lissé bayésien avec α=30"""
+        """Calcul du WinRate lissé bayésien."""
         
-        # Lissage bayésien: (succès + α*prior) / (total + α)
-        # Prior = 0.5 (50% de base)
         prior = 0.5
         successes = (winrate / 100) * trades
         smoothed = (successes + self.alpha_bayesian * prior) / (trades + self.alpha_bayesian)
         
-        return smoothed * 100  # Retour en pourcentage
+        return smoothed * 100
     
     def normalize_roi(self, tier_data):
-        """Normalisation min-max du ROI sur les paliers du wallet"""
+        """Normalisation min-max du ROI sur les paliers du wallet."""
         
         if not tier_data:
             return {}
@@ -117,7 +106,7 @@ class OptimalThresholdAnalyzer:
         roi_max = max(rois)
         
         if roi_max == roi_min:
-            return {tier: 0.5 for tier in tier_data.keys()}  # ROI constant
+            return {tier: 0.5 for tier in tier_data.keys()}
             
         normalized = {}
         for tier, data in tier_data.items():
@@ -126,7 +115,7 @@ class OptimalThresholdAnalyzer:
         return normalized
     
     def calculate_j_scores(self, tier_data):
-        """Calcule le score J_t pour chaque palier"""
+        """Calcule le score J_t pour chaque palier."""
         
         if not tier_data:
             return {}
@@ -135,56 +124,48 @@ class OptimalThresholdAnalyzer:
         j_scores = {}
         
         for tier, data in tier_data.items():
-            # WinRate lissé bayésien
             winrate_smooth = self.calculate_bayesian_winrate(data['winrate'], data['trades'])
-            winrate_norm = winrate_smooth / 100  # Normalisation 0-1
+            winrate_norm = winrate_smooth / 100
             
-            # Score J_t (poids rééquilibrés pour favoriser la consistance)
-            j_score = (0.5 * roi_normalized[tier] +
-                      0.3 * winrate_norm +
-                      0.2 * math.log(1 + data['trades']))
+            jw = _OT["J_SCORE_WEIGHTS"]
+            j_score = (jw["ROI"] * roi_normalized[tier] +
+                       jw["WINRATE"] * winrate_norm +
+                       jw["TRADES_LOG"] * math.log(1 + data['trades']))
             
             j_scores[tier] = j_score
             
         return j_scores
     
     def find_optimal_threshold(self, j_scores, tier_data):
-        """Trouve le seuil optimal τ_w"""
+        """Trouve le seuil optimal τ_w."""
         
         if not j_scores:
             return None
             
-        # Calculer le 60e percentile des scores J_t
         scores = list(j_scores.values())
-        percentile_60 = np.percentile(scores, 60)
+        percentile_60 = np.percentile(scores, _OT["PERCENTILE"])
         
-        # Stratégie 1: Chercher un plateau stable
         tiers_sorted = sorted(j_scores.keys())
         
         for i, tier in enumerate(tiers_sorted):
             current_score = j_scores[tier]
             
-            # Score au-dessus du 60e percentile ?
             if current_score >= percentile_60:
                 
-                # Vérifier la stabilité sur le palier suivant
                 if i + 1 < len(tiers_sorted):
                     next_tier = tiers_sorted[i + 1]
                     next_score = j_scores[next_tier]
                     
-                    # Chute de moins de 15% ?
                     if (current_score - next_score) / current_score <= self.stability_threshold:
-                        return tier  # Plateau trouvé
+                        return tier
                 else:
-                    # Dernier palier et au-dessus du seuil
                     return tier
         
-        # Stratégie 2: Maximiser J_t - 0.05·log(palier/1000)
         best_tier = None
         best_adjusted_score = -float('inf')
 
         for tier in tiers_sorted:
-            penalty = 0.05 * math.log(tier / 1.0)  # tier en milliers (baseline 1K)
+            penalty = _OT["PENALTY_COEF"] * math.log(tier / 1.0)
             adjusted_score = j_scores[tier] - penalty
             
             if adjusted_score > best_adjusted_score:
@@ -194,72 +175,50 @@ class OptimalThresholdAnalyzer:
         return best_tier
     
     def calculate_quality(self, wallet_address, optimal_threshold, tier_data):
-        """Calcule la qualité q_w du wallet - VERSION SIMPLIFIÉE"""
+        """Calcule la qualité q_w du wallet."""
         
         if not optimal_threshold or not tier_data:
             return 0.05
             
-        # Métriques au seuil optimal
         optimal_data = tier_data.get(optimal_threshold)
         if not optimal_data:
             return 0.05
             
-        # Calculer métriques globales (tous paliers) avec vraies données
         total_trades_global = sum(data['trades'] for data in tier_data.values())
-        total_wins_global = sum(data['gagnants'] for data in tier_data.values())
-        total_losses_global = sum(data['perdants'] for data in tier_data.values())
-        total_neutres_global = sum(data['neutres'] for data in tier_data.values())
-        total_roi_weighted = sum(data['roi'] * data['trades'] for data in tier_data.values())
         
         if total_trades_global == 0:
             return 0.05
             
-        # Winrate global : gagnants / total_trades (neutres inclus)
-        global_winrate = (total_wins_global / total_trades_global) * 100 if total_trades_global > 0 else 0
-        global_roi = total_roi_weighted / total_trades_global
-
-        # Métriques au seuil optimal avec vraies données
         optimal_roi = optimal_data['roi']
         optimal_trades = optimal_data['trades']
         optimal_gagnants = optimal_data['gagnants']
         optimal_perdants = optimal_data['perdants']
         optimal_neutres = optimal_data['neutres']
 
-        # Winrate optimal : gagnants / total_trades (neutres inclus)
         optimal_winrate = (optimal_gagnants / optimal_trades) * 100 if optimal_trades > 0 else 0
         optimal_neutralrate = (optimal_neutres / optimal_trades) * 100 if optimal_trades > 0 else 0
         
-        # FORMULE: 4 composantes avec neutral rate
-        
-        # 1. Performance ROI normalisée (0-1)
-        roi_score = min(1.0, max(0.0, optimal_roi / 300.0))  # 300% = score max
-        
-        # 2. WinRate normalisé (0-1) 
-        winrate_score = min(1.0, max(0.0, optimal_winrate / 80.0))  # 80% = score max
-        
-        # 3. Volume de trades (plus de trades = plus fiable)
-        volume_score = min(1.0, math.log(1 + optimal_trades) / math.log(50))  # 50 trades = score max
-        
-        # 4. Neutral rate (gestion des risques) - petit bonus pour ~10-20%
-        neutral_score = min(1.0, optimal_neutralrate / 20.0) if optimal_neutralrate <= 20 else max(0.0, 1.0 - (optimal_neutralrate - 20) / 30.0)
-        
-        # Score final: moyenne pondérée avec petit bonus neutral
-        final_score = 0.5 * roi_score + 0.3 * winrate_score + 0.15 * volume_score + 0.05 * neutral_score
-        
-        # Distribution entre 0.1 et 1.0
-        quality = 0.1 + 0.9 * min(1.0, max(0.0, final_score))
+        roi_score = min(1.0, max(0.0, optimal_roi / _OT["ROI_SCORE_MAX"]))
+        winrate_score = min(1.0, max(0.0, optimal_winrate / _OT["WINRATE_SCORE_MAX"]))
+        volume_score = min(1.0, math.log(1 + optimal_trades) / math.log(_OT["VOLUME_SCORE_MAX_TRADES"]))
+        nrt = _OT["NEUTRAL_RATE_TARGET"]
+        nrp = _OT["NEUTRAL_RATE_OVER_PENALTY"]
+        neutral_score = min(1.0, optimal_neutralrate / nrt) if optimal_neutralrate <= nrt else max(0.0, 1.0 - (optimal_neutralrate - nrt) / nrp)
+
+        jw = _OT["J_SCORE_WEIGHTS"]
+        final_score = jw["ROI"] * roi_score + jw["WINRATE"] * winrate_score + 0.15 * volume_score + 0.05 * neutral_score
+
+        quality = _OT["QUALITY_BASE"] + _OT["QUALITY_SCALE"] * min(1.0, max(0.0, final_score))
         
         return round(quality, 3)
     
     def analyze_wallet(self, wallet_address):
-        """Analyse complète d'un wallet"""
+        """Analyse complète d'un wallet."""
         
-        # 1. Récupérer les données
         tier_data = self.get_wallet_tier_data(wallet_address)
         if not tier_data:
             return None
             
-        # 2. Filtrer les paliers fiables
         reliable_tiers = self.filter_reliable_tiers(tier_data)
         if not reliable_tiers:
             return {
@@ -272,25 +231,22 @@ class OptimalThresholdAnalyzer:
                 'tier_data': {}
             }
         
-        # 3. Calculer les scores J_t
         j_scores = self.calculate_j_scores(reliable_tiers)
         
-        # 4. Trouver le seuil optimal
         optimal_threshold = self.find_optimal_threshold(j_scores, reliable_tiers)
         
-        # 5. Calculer la qualité
         quality = self.calculate_quality(wallet_address, optimal_threshold, reliable_tiers)
         
-        # Déterminer le statut
-        if quality >= 0.9:
+        st = _OT["STATUS_THRESHOLDS"]
+        if quality >= st["EXCEPTIONAL"]:
             status = 'EXCEPTIONAL'
-        elif quality >= 0.7:
+        elif quality >= st["EXCELLENT"]:
             status = 'EXCELLENT'
-        elif quality >= 0.5:
+        elif quality >= st["GOOD"]:
             status = 'GOOD'
-        elif quality >= 0.3:
+        elif quality >= st["AVERAGE"]:
             status = 'AVERAGE'
-        elif quality == 0.15:
+        elif quality == st["NEUTRAL"]:
             status = 'NEUTRAL'
         else:
             status = 'POOR'
@@ -306,29 +262,23 @@ class OptimalThresholdAnalyzer:
         }
     
     def analyze_all_qualified_wallets(self, quality_filter=None):
-        """Analyse tous les wallets qualifiés avec filtre de qualité optionnel"""
+        """Analyse tous les wallets qualifiés avec filtre de qualité optionnel."""
         
         if quality_filter is not None:
             self.filter_quality_min = quality_filter
             
-        print("🎯 ANALYSE DES SEUILS OPTIMAUX - WALLETS QUALIFIÉS")
-        print("=" * 80)
-        if self.filter_quality_min > 0:
-            print(f"⭐ Filtre qualité: ≥ {self.filter_quality_min} (exceptionnels uniquement)")
-            print("=" * 80)
-        
-        # Récupérer les wallets qualifiés
+        logger.info(f"ANALYSE DES SEUILS OPTIMAUX | filtre qualité: {self.filter_quality_min}")
+
         conn = sqlite3.connect(DB_PATH)
         query = "SELECT wallet_address FROM wallet_qualified ORDER BY final_score DESC"
         qualified_wallets = conn.execute(query).fetchall()
         conn.close()
-        
+
         if not qualified_wallets:
-            print("❌ Aucun wallet qualifié trouvé")
+            logger.warning("Aucun wallet qualifié trouvé")
             return []
-            
-        print(f"📊 Analyse de {len(qualified_wallets)} wallets qualifiés")
-        print()
+
+        logger.info(f"Analyse de {len(qualified_wallets)} wallets qualifiés")
         
         results = []
         filtered_results = []
@@ -340,101 +290,71 @@ class OptimalThresholdAnalyzer:
             if result:
                 results.append(result)
                 
-                # Appliquer le filtre de qualité
                 if result['quality'] >= self.filter_quality_min:
                     filtered_results.append(result)
                     
-                    # Affichage seulement pour les wallets filtrés
                     threshold_str = f"{result['optimal_threshold']}K" if result['optimal_threshold'] else "N/A"
-                    print(f"🔍 {wallet_address[:10]}...{wallet_address[-8:]}")
-                    print(f"   Seuil optimal: {threshold_str} | Qualité: {result['quality']:.3f} | "
-                          f"Statut: {result['status']} | Paliers fiables: {result['reliable_tiers_count']}")
-                    
+                    logger.info(f"{wallet_address[:10]}...{wallet_address[-8:]} seuil={threshold_str} qualité={result['quality']:.3f} statut={result['status']} paliers_fiables={result['reliable_tiers_count']}")
                     if result['j_scores']:
                         scores_str = " | ".join([f"{k}K:{v:.2f}" for k, v in result['j_scores'].items()])
-                        print(f"   Scores J_t: {scores_str}")
-                    print()
+                        logger.info(f"  J_t: {scores_str}")
         
-        # Sauvegarder TOUS les résultats dans smart_wallets (pas seulement les filtrés)
         self.save_to_smart_wallets(results)
         
-        # Statistiques sur les résultats filtrés
         if self.filter_quality_min > 0:
-            print(f"📊 STATISTIQUES FILTRÉES (qualité ≥ {self.filter_quality_min})")
-            print("=" * 60)
-            print(f"Wallets exceptionnels: {len(filtered_results)}/{len(results)} "
-                  f"({len(filtered_results)/len(results)*100:.1f}%)")
+            logger.info(f"Wallets exceptionnels (qualité ≥ {self.filter_quality_min}): {len(filtered_results)}/{len(results)} ({len(filtered_results)/len(results)*100:.1f}%)")
             self.display_global_stats(filtered_results)
-            print()
-        
-        # Statistiques globales (tous)
-        print(f"📊 STATISTIQUES GLOBALES (tous wallets)")
-        print("=" * 50)
+
+        logger.info("STATISTIQUES GLOBALES")
         self.display_global_stats(results)
         
         return filtered_results if self.filter_quality_min > 0 else results
     
     def display_global_stats(self, results):
-        """Affiche les statistiques globales"""
-        
+        """Affiche les statistiques globales."""
         if not results:
             return
-            
-        print("📊 STATISTIQUES GLOBALES")
-        print("=" * 50)
-        
-        # Distribution des statuts
+
         status_counts = {}
         qualities = []
         thresholds = []
-        
+
         for result in results:
             status = result['status']
             status_counts[status] = status_counts.get(status, 0) + 1
             qualities.append(result['quality'])
-            
             if result['optimal_threshold']:
                 thresholds.append(result['optimal_threshold'])
-        
-        print("Distribution des statuts:")
+
         for status, count in sorted(status_counts.items()):
             pct = count / len(results) * 100
-            print(f"  {status}: {count} wallets ({pct:.1f}%)")
-        
+            logger.info(f"  {status}: {count} wallets ({pct:.1f}%)")
+
         if qualities:
-            print(f"\nQualité moyenne: {sum(qualities)/len(qualities):.3f}")
-            print(f"Qualité médiane: {sorted(qualities)[len(qualities)//2]:.3f}")
-            print(f"Qualité max: {max(qualities):.3f}")
-        
+            logger.info(f"Qualité moy={sum(qualities)/len(qualities):.3f} médiane={sorted(qualities)[len(qualities)//2]:.3f} max={max(qualities):.3f}")
+
         if thresholds:
-            print(f"\nSeuil moyen: {sum(thresholds)/len(thresholds):.1f}K")
-            print(f"Seuil médian: {sorted(thresholds)[len(thresholds)//2]}K")
-            
-            # Distribution des seuils
             threshold_counts = {}
             for t in thresholds:
                 threshold_counts[t] = threshold_counts.get(t, 0) + 1
-            
-            print(f"\nDistribution des seuils:")
+            logger.info(f"Seuil moy={sum(thresholds)/len(thresholds):.1f}K médian={sorted(thresholds)[len(thresholds)//2]}K")
             for threshold in sorted(threshold_counts.keys()):
                 count = threshold_counts[threshold]
                 pct = count / len(thresholds) * 100
-                print(f"  {threshold}K: {count} wallets ({pct:.1f}%)")
+                logger.info(f"  {threshold}K: {count} wallets ({pct:.1f}%)")
     
     def save_to_smart_wallets(self, results):
-        """Sauvegarde les résultats dans la nouvelle table smart_wallets"""
+        """Sauvegarde les résultats dans la table smart_wallets."""
         
         if not results:
-            print("❌ Aucun résultat à sauvegarder")
+            logger.warning("Aucun résultat à sauvegarder")
             return
             
         try:
             conn = sqlite3.connect(DB_PATH, timeout=30.0)
             
-            # Vider la table avant insertion
             conn.execute("DELETE FROM smart_wallets")
             
-            # Insérer chaque wallet dans smart_wallets
             insert_query = """
                 INSERT INTO smart_wallets (
                     wallet_address, optimal_threshold_tier, quality_score, threshold_status,
@@ -448,15 +368,12 @@ class OptimalThresholdAnalyzer:
             inserted_count = 0
             
             for result in results:
-                # Filtrer les wallets avec quality_score < 0.3
-                if result['quality'] < 0.3:
+                if result['quality'] < _OT["MIN_INSERT_QUALITY"]:
                     continue
-                # Calculer métriques scores J_t
                 j_scores = result.get('j_scores', {})
                 j_score_max = max(j_scores.values()) if j_scores else 0.0
                 j_score_avg = sum(j_scores.values()) / len(j_scores) if j_scores else 0.0
                 
-                # Métriques au seuil optimal
                 optimal_roi = 0.0
                 optimal_winrate = 0.0
                 optimal_trades = 0
@@ -465,7 +382,6 @@ class OptimalThresholdAnalyzer:
                 optimal_neutres = 0
                 
                 if result['optimal_threshold'] and result['tier_data']:
-                    # Données du palier optimal
                     optimal_tier_data = result['tier_data'].get(result['optimal_threshold'])
                     if optimal_tier_data:
                         optimal_roi = optimal_tier_data['roi']
@@ -475,11 +391,9 @@ class OptimalThresholdAnalyzer:
                         optimal_perdants = optimal_tier_data['perdants']
                         optimal_neutres = optimal_tier_data['neutres']
 
-                # FILTRES: ROI optimal >= 50% ET Taux de réussite >= 25%
-                if optimal_roi < 70 or optimal_winrate < 20:
+                if optimal_roi < _OT["MIN_OPTIMAL_ROI"] or optimal_winrate < _OT["MIN_OPTIMAL_WINRATE"]:
                     continue
 
-                # Métriques globales (tous paliers)
                 global_roi = 0.0
                 global_winrate = 0.0
                 global_trades = 0
@@ -494,10 +408,8 @@ class OptimalThresholdAnalyzer:
                     global_winrate = (total_wins_global / total_trades_global * 100) if total_trades_global > 0 else 0.0
                     global_roi = sum(all_rois) / len(all_rois) if all_rois else 0.0
                 
-                # Gérer les cas sans seuil optimal
                 optimal_threshold = result['optimal_threshold'] or 0
                 
-                # Insérer les données
                 insert_data = (
                     result['wallet_address'],
                     optimal_threshold,
@@ -524,25 +436,24 @@ class OptimalThresholdAnalyzer:
             conn.close()
             
             filtered_count = len(results) - inserted_count
-            print(f"✅ {inserted_count} wallets insérés dans smart_wallets (quality ≥ 0.3)")
+            logger.info(f"{inserted_count} wallets insérés dans smart_wallets (quality ≥ {_OT['MIN_INSERT_QUALITY']})")
             if filtered_count > 0:
-                print(f"🚫 {filtered_count} wallets filtrés (quality < 0.3)")
-            
+                logger.info(f"{filtered_count} wallets filtrés (quality < {_OT['MIN_INSERT_QUALITY']})")
+
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e):
-                print(f"⚠️ Base verrouillée, abandon sauvegarde")
+                logger.warning("Base verrouillée, abandon sauvegarde")
             else:
-                print(f"❌ Erreur SQL: {e}")
+                logger.error(f"Erreur SQL: {e}")
         except Exception as e:
-            print(f"❌ Erreur sauvegarde: {e}")
+            logger.error(f"Erreur sauvegarde: {e}")
     
     def get_smart_wallets_threshold_stats(self):
-        """Affiche les statistiques des seuils optimaux depuis smart_wallets"""
+        """Affiche les statistiques des seuils optimaux depuis smart_wallets."""
         
         try:
             conn = sqlite3.connect(DB_PATH)
             
-            # Statistiques générales
             general_stats_query = """
                 SELECT 
                     COUNT(*) as total,
@@ -557,7 +468,6 @@ class OptimalThresholdAnalyzer:
             
             general_stats = conn.execute(general_stats_query).fetchone()
             
-            # Distribution par statut
             status_query = """
                 SELECT threshold_status, COUNT(*) as count
                 FROM smart_wallets
@@ -567,7 +477,6 @@ class OptimalThresholdAnalyzer:
             
             status_stats = conn.execute(status_query).fetchall()
             
-            # Top wallets
             top_wallets_query = """
                 SELECT wallet_address, optimal_threshold_tier, quality_score, 
                        optimal_roi, optimal_winrate, threshold_status
@@ -582,33 +491,20 @@ class OptimalThresholdAnalyzer:
             conn.close()
             
             if general_stats and general_stats[0] > 0:
-                print(f"\n📊 STATISTIQUES SMART_WALLETS")
-                print("=" * 60)
-                print(f"Total wallets: {general_stats[0]}")
-                print(f"Qualité moyenne: {general_stats[1]:.3f}")
-                print(f"Seuil moyen: {general_stats[2]:.1f}K")
-                print(f"ROI optimal moyen: {general_stats[3]:.1f}%")
-                print(f"WinRate optimal moyen: {general_stats[4]:.1f}%")
-                print(f"ROI global moyen: {general_stats[5]:.1f}%")
-                print(f"WinRate global moyen: {general_stats[6]:.1f}%")
-                
-                print(f"\nDistribution par statut:")
+                logger.info(f"STATS smart_wallets: total={general_stats[0]} qualité_moy={general_stats[1]:.3f} seuil_moy={general_stats[2]:.1f}K roi_opt_moy={general_stats[3]:.1f}% wr_opt_moy={general_stats[4]:.1f}%")
                 for status, count in status_stats:
                     pct = count / general_stats[0] * 100
-                    print(f"  {status}: {count} wallets ({pct:.1f}%)")
-                
+                    logger.info(f"  {status}: {count} wallets ({pct:.1f}%)")
                 if top_wallets:
-                    print(f"\n🏆 TOP 5 WALLETS:")
+                    logger.info("TOP 5 WALLETS:")
                     for i, wallet in enumerate(top_wallets, 1):
                         addr_short = wallet[0][:10] + "..." + wallet[0][-8:]
-                        print(f"  {i}. {addr_short} | Seuil: {wallet[1]}K | "
-                              f"Qualité: {wallet[2]:.3f} | ROI: {wallet[3]:.1f}% | "
-                              f"WinRate: {wallet[4]:.1f}% | {wallet[5]}")
+                        logger.info(f"  {i}. {addr_short} seuil={wallet[1]}K qualité={wallet[2]:.3f} roi={wallet[3]:.1f}% wr={wallet[4]:.1f}% {wallet[5]}")
             else:
-                print("❌ Aucune donnée dans smart_wallets")
-                    
+                logger.warning("Aucune donnée dans smart_wallets")
+
         except Exception as e:
-            print(f"❌ Erreur lecture stats smart_wallets: {e}")
+            logger.error(f"Erreur lecture stats smart_wallets: {e}")
 
 if __name__ == "__main__":
     import argparse
@@ -624,15 +520,13 @@ if __name__ == "__main__":
     analyzer = OptimalThresholdAnalyzer()
     results = analyzer.analyze_all_qualified_wallets(quality_filter=args.quality_filter)
     
-    # Vérifier la sauvegarde
     if args.show_stats:
         analyzer.get_smart_wallets_threshold_stats()
     
-    # Résumé final
     if args.quality_filter > 0:
-        print(f"\n🎯 RÉSUMÉ: {len(results)} wallets exceptionnels (qualité ≥ {args.quality_filter})")
-        for result in results[:5]:  # Top 5
+        logger.info(f"RÉSUMÉ: {len(results)} wallets exceptionnels (qualité ≥ {args.quality_filter})")
+        for result in results[:5]:
             threshold_str = f"{result['optimal_threshold']}K" if result['optimal_threshold'] else "N/A"
-            print(f"   • {result['wallet_address'][:10]}... | {threshold_str} | Q={result['quality']:.3f}")
+            logger.info(f"  {result['wallet_address'][:10]}... {threshold_str} Q={result['quality']:.3f}")
     else:
-        print(f"\n🎯 RÉSUMÉ: {len(results)} wallets analysés au total")
+        logger.info(f"RÉSUMÉ: {len(results)} wallets analysés au total")
