@@ -45,29 +45,32 @@ def _ensure_consensus_live_log_columns(cursor):
         logger.info("Colonne ajoutée à consensus_live: %s", column_name)
 
 def get_smart_wallets():
-    """Récupère les wallets qualifiés depuis smart_wallets."""
+    """Récupère les smart wallets depuis wallet_scoring."""
     try:
+        from smart_wallet_analysis.config import TRACKING_LIVE
+        limit = TRACKING_LIVE["SMART_WALLETS_LIMIT"]
+
         conn = sqlite3.connect(DB_PATH)
-
         query = """
-            SELECT 
+            SELECT
                 wallet_address,
-                optimal_threshold_tier,
-                quality_score,
-                threshold_status,
-                optimal_roi,
-                optimal_winrate
-            FROM smart_wallets
-            WHERE optimal_threshold_tier > 0
-            AND threshold_status != 'NO_RELIABLE_TIERS'
-            ORDER BY quality_score DESC
+                tier as optimal_threshold_tier,
+                score_final as quality_score,
+                CASE
+                    WHEN tier = 1 THEN 'EXCELLENT'
+                    WHEN tier = 2 THEN 'GOOD'
+                    ELSE 'AVERAGE'
+                END as threshold_status,
+                roi_12m as optimal_roi,
+                win_rate as optimal_winrate
+            FROM wallet_scoring
+            WHERE score_final IS NOT NULL
+            ORDER BY score_final DESC
+            LIMIT ?
         """
-
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, params=(limit,))
         conn.close()
-
         return df.set_index('wallet_address').to_dict('index')
-
     except Exception as e:
         logger.error(f"Erreur récupération smart wallets: {e}")
         return {}
@@ -129,9 +132,11 @@ def get_recent_transactions_live(smart_wallets):
         })
 
         df_grouped['threshold_usd'] = df_grouped['optimal_threshold_tier'].fillna(0) * 1000
-        qualified = df_grouped[df_grouped['investment_usd'] >= df_grouped['threshold_usd']]
+        min_investment = CONSENSUS_LIVE["MIN_INVESTMENT_USD"]
+        df_grouped['effective_threshold'] = df_grouped['threshold_usd'].apply(lambda x: max(x, min_investment))
+        qualified = df_grouped[df_grouped['investment_usd'] >= df_grouped['effective_threshold']]
 
-        logger.info(f"Seuils appliqués: {len(qualified)} wallet/token qualifiés sur {len(df_grouped)} combinaisons")
+        logger.info(f"Seuils appliqués (min {min_investment} USD): {len(qualified)} wallet/token qualifiés sur {len(df_grouped)} combinaisons")
 
         if qualified.empty:
             return pd.DataFrame()

@@ -17,6 +17,7 @@ from pathlib import Path
 import argparse
 
 from smart_wallet_analysis.logger import get_logger
+from smart_wallet_analysis.backtesting_engine.trading_simulator import backtest_consensus_with_tp
 
 # =============================================================================
 # CONFIGURATION SIMPLIFIÉE
@@ -72,11 +73,6 @@ def init_output_directory():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     return OUTPUT_DIR
 
-def _is_exceptional_status(status):
-    """Retourne True si le statut wallet est excellent/exceptionnel."""
-    normalized = str(status or "").strip().upper()
-    return normalized in {"EXCEPTIONAL", "EXCELLENT"} or "EXCEPTIONAL" in normalized or "EXCELLENT" in normalized
-
 def get_current_price_dexscreener(contract_address, retries=2):
     """Récupère le prix actuel via DexScreener avec retry"""
     for attempt in range(retries):
@@ -105,31 +101,43 @@ def get_current_price_dexscreener(contract_address, retries=2):
     return None
 
 def get_smart_wallets():
-    """Récupère les wallets qualifiés depuis smart_wallets"""
+    """Récupère les top 15 wallets depuis wallet_scoring avec seuil 2K."""
     try:
         conn = sqlite3.connect(DB_PATH)
-        
         query = """
-            SELECT 
+            SELECT
                 wallet_address,
-                optimal_threshold_tier,
-                quality_score,
-                threshold_status,
-                optimal_roi,
-                optimal_winrate
-            FROM smart_wallets
-            WHERE optimal_threshold_tier > 0
-            AND threshold_status != 'NO_RELIABLE_TIERS'
-            ORDER BY quality_score DESC
+                tier,
+                score_final,
+                win_rate,
+                roi_1m,
+                roi_12m,
+                nb_trades
+            FROM wallet_scoring
+            ORDER BY score_final DESC
+            LIMIT 15
         """
-        
         df = pd.read_sql_query(query, conn)
         conn.close()
-        
-        return df.set_index('wallet_address').to_dict('index')
-        
+
+        # Transformer pour correspondre au format attendu
+        wallets = {}
+        for _, row in df.iterrows():
+            wallets[row['wallet_address']] = {
+                'optimal_threshold_tier': 0.5,  # Seuil fixe 2K ($2000)
+                'quality_score': row['score_final'] / 100.0,  # Normaliser
+                'threshold_status': 'TOP15',
+                'optimal_roi': row['roi_12m'] if row['roi_12m'] else 0,
+                'optimal_winrate': row['win_rate'] * 100 if row['win_rate'] else 0,
+                'tier': row['tier'],
+                'score_final': row['score_final'],
+                'win_rate': row['win_rate'],
+                'roi_1m': row['roi_1m']
+            }
+        return wallets
+
     except Exception as e:
-        logger.info(f"❌ Erreur récupération smart wallets: {e}")
+        logger.info(f"❌ Erreur récupération wallets: {e}")
         return {}
 
 def _to_utc_z(dt: datetime) -> str:
@@ -280,34 +288,32 @@ def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
             
             # Analyser les wallets participants avec SOMMATION par wallet
             whale_analysis = {}
-            exceptional_whales = 0
-            normal_whales = 0
-            
+
             # D'abord, grouper et sommer les investissements par wallet dans cette fenêtre
             wallet_sums = window_txs.groupby('wallet_address').agg({
                 'investment_usd': 'sum',
                 'optimal_threshold_tier': 'first',
-                'quality_score': 'first', 
+                'quality_score': 'first',
                 'threshold_status': 'first',
                 'optimal_roi': 'first',
                 'optimal_winrate': 'first'
             })
-            
+
             # Vérifier quels wallets dépassent leur seuil optimal avec la somme
             qualified_wallets = set()
             for wallet_addr, wallet_data in wallet_sums.iterrows():
                 threshold_usd = wallet_data['optimal_threshold_tier'] * 1000
                 if wallet_data['investment_usd'] >= threshold_usd:
                     qualified_wallets.add(wallet_addr)
-            
+
             # Maintenant analyser seulement les wallets qualifiés
             for _, tx in window_txs.iterrows():
                 wallet_addr = tx['wallet_address']
-                
+
                 # Ignorer les wallets qui ne dépassent pas leur seuil avec la somme
                 if wallet_addr not in qualified_wallets:
                     continue
-                
+
                 if wallet_addr not in whale_analysis:
                     whale_analysis[wallet_addr] = {
                         'transactions': [],
@@ -320,33 +326,20 @@ def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
                             'optimal_winrate': tx['optimal_winrate']
                         }
                     }
-                    
-                    # Compter les types de wallets (une seule fois par wallet)
-                    if _is_exceptional_status(tx['threshold_status']):
-                        exceptional_whales += 1
-                    else:
-                        normal_whales += 1
-                
+
                 whale_analysis[wallet_addr]['transactions'].append(tx)
                 whale_analysis[wallet_addr]['total_investment'] += tx['investment_usd']
-            
+
             # LOGIQUE DE DÉTECTION CONSENSUS SIMPLE
             unique_whales = len(whale_analysis)
             signal_valid = False
-            signal_type = ""
-            
-            # RÈGLE UNIQUE: Consensus >=2 wallets ET au moins 1 EXCELLENT/EXCEPTIONAL
-            if unique_whales >= config.min_whales_consensus and exceptional_whales >= 1:
+            signal_type = "CONSENSUS"
+
+            # Consensus simple: >=2 wallets
+            if unique_whales >= config.min_whales_consensus:
                 signal_valid = True
-                if exceptional_whales >= 1 and normal_whales >= 1:
-                    signal_type = "MIXED_CONSENSUS"  # Exceptionnels + normaux
-                else:
-                    signal_type = "EXCEPTIONAL_CONSENSUS"  # Que des excellent/exceptional
-            
+
             if signal_valid:
-                # Garde-fou: un consensus sans EXCELLENT/EXCEPTIONAL est invalide
-                if exceptional_whales < 1:
-                    continue
 
                 # Signal détecté !
                 signal_txs = window_txs
@@ -358,8 +351,6 @@ def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
                     'consensus_start': base_tx['date'],
                     'consensus_end': signal_txs['date'].max(),
                     'whale_count': unique_whales,
-                    'exceptional_count': exceptional_whales,
-                    'normal_count': normal_whales,
                     'signal_type': signal_type,
                     'total_investment': sum(data['total_investment'] for data in whale_analysis.values()),
                     'avg_entry_price': (signal_txs['investment_usd'] * signal_txs['price_per_token']).sum() / signal_txs['investment_usd'].sum(),
@@ -383,10 +374,8 @@ def detect_consensus_in_period(df_transactions, global_detected_tokens=None):
                         'transaction_count': len(data['transactions'])
                     })
                 
-                # Trier par type de wallet puis par investissement
-                signal_data['whale_details'].sort(
-                    key=lambda x: (not _is_exceptional_status(x['threshold_status']), -x['investment_usd'])
-                )
+                # Trier par investissement décroissant
+                signal_data['whale_details'].sort(key=lambda x: -x['investment_usd'])
                 
                 signals_detected.append(signal_data)
                 processed_tokens.add(symbol)
@@ -542,8 +531,7 @@ def run_simple_backtesting():
                     emoji = type_emoji.get(signal['signal_type'], '🔍')
                     
                     logger.info(f"   {emoji} {signal['symbol']} ({signal['signal_type']}): "
-                          f"{signal['whale_count']} whales ({signal['exceptional_count']} exceptionnels + "
-                          f"{signal['normal_count']} normaux), ${signal['total_investment']:,.0f}")
+                          f"{signal['whale_count']} wallets, ${signal['total_investment']:,.0f}")
                     logger.info(f"     📅 Détecté le: {signal['detection_date'].strftime('%Y-%m-%d %H:%M')}")
                     logger.info(f"     🐋 Wallets participants:")
                     
@@ -551,11 +539,8 @@ def run_simple_backtesting():
                         # Trouver la première transaction de cette whale pour ce token
                         whale_txs = signal['transactions'][signal['transactions']['wallet_address'] == whale['address']]
                         whale_date = whale_txs['date'].min().strftime('%Y-%m-%d %H:%M') if not whale_txs.empty else "N/A"
-                        
-                        # Emoji selon le statut
-                        status_emoji = '⭐' if _is_exceptional_status(whale['threshold_status']) else '🔷'
-                        
-                        logger.info(f"        {status_emoji} [{whale['threshold_status']}] "
+
+                        logger.info(f"        🔷 [{whale['threshold_status']}] "
                               f"Seuil {whale['optimal_threshold_tier']}K | "
                               f"Q={whale['quality_score']:.3f} | "
                               f"ROI {whale['optimal_roi']:+.1f}% | "
@@ -687,8 +672,6 @@ def export_simple_results(all_consensus, period_results):
             },
             'whale_count': int(consensus['whale_count']),
             'signal_type': consensus.get('signal_type'),
-            'exceptional_count': int(consensus.get('exceptional_count', 0)),
-            'normal_count': int(consensus.get('normal_count', 0)),
             'total_investment': float(consensus['total_investment']),
             'avg_entry_price': float(consensus['avg_entry_price']),
             'whale_details': consensus['whale_details'],
@@ -732,13 +715,13 @@ def main():
     parser = argparse.ArgumentParser(description='Backtesting Consensus Simple')
     
     # Paramètres simples
-    parser.add_argument('--min-whales', type=int, default=2, 
+    parser.add_argument('--min-whales', type=int, default=3, 
                        help='Nombre minimum de whales pour consensus')
     
     # Paramètres temporels
-    parser.add_argument('--start-date', default="2025-09-01",
+    parser.add_argument('--start-date', default="2026-01-01",
                        help='Date de début (YYYY-MM-DD)')
-    parser.add_argument('--period-days', type=int, default=5,
+    parser.add_argument('--period-days', type=int, default=3,
                        help='Période d\'analyse en jours')
     
     args = parser.parse_args()
@@ -750,9 +733,16 @@ def main():
     
     # Lancer le backtesting SIMPLE
     all_consensus, period_results = run_simple_backtesting()
-    
+
     if all_consensus:
         export_simple_results(all_consensus, period_results)
+
+        # Simuler le trading avec paliers de TP
+        logger.info(f"\n{'='*80}")
+        logger.info("🎯 LANCEMENT DE LA SIMULATION DE TRADING")
+        logger.info(f"{'='*80}")
+        trading_results = backtest_consensus_with_tp(all_consensus)
+
         logger.info(f"\n🎉 BACKTESTING SIMPLE TERMINÉ AVEC SUCCÈS!")
     else:
         logger.info(f"\n❌ Aucun consensus simple détecté avec ces paramètres")

@@ -35,7 +35,14 @@ TOKEN_DISCOVERY_MANUAL = {
     "EXPORT_DIR": ROOT_DIR / "data" / "raw" / "csv" / "top_wallets",
     "CACHE_PATH": ROOT_DIR / "data" / "cache" / "early_wallets_extracted_manual.csv",
     "EOA_CHECK_DELAY_SECONDS": 0.2,
-    "EARLY_WINDOW_HOURS_BY_TYPE": {1: 24, 2: 168, 3: 720}
+    "EARLY_WINDOW_HOURS_BY_TYPE": {1: 24, 2: 168, 3: 720},
+    "USER_AGENTS": [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    ]
 }
 
 SMART_WALLETS_PIPELINE = {
@@ -56,6 +63,7 @@ GECKO_TOP_PERFORMERS = {
     "MIN_PRICE_CHANGE_24H": 20,
     "MIN_VOLUME_24H": 5000,
     "MIN_LIQUIDITY": 3000,
+    "MIN_FDV": 300000,
     "MAX_FDV": 100000000,
     "MIN_TXNS_24H": 50,
     "MIN_BUYS_RATIO": 0.15,
@@ -63,7 +71,7 @@ GECKO_TOP_PERFORMERS = {
     "MAX_POOLS_PER_NETWORK": 200,
     "MAX_POOLS_PER_NETWORK_MULTI": 30,
     "OUTPUT_DIR": ROOT_DIR / "data" / "raw" / "json",
-    "MIN_MARKET_CAP": 500_000,
+    "MIN_MARKET_CAP": 300_000,
     "MAX_POOL_AGE_DAYS": 30,
     "OHLCV_LIMIT": 200,
     "OHLCV_AGGREGATE": 4,
@@ -73,8 +81,9 @@ GECKO_TOP_PERFORMERS = {
 }
 
 CONSENSUS_LIVE = {
-    "MIN_WHALES_CONSENSUS": 2,
-    "PERIOD_DAYS": 5,
+    "MIN_WHALES_CONSENSUS": 3,
+    "PERIOD_DAYS": 3,
+    "MIN_INVESTMENT_USD": 1000,
     "MAX_MARKET_CAP": 100_000_000,
     "MIN_MARKET_CAP": 100_000,
     "EXCLUDED_TOKENS": (
@@ -112,57 +121,52 @@ SCORE_ENGINE = {
         "SLEEP_EVERY_WALLETS": 10,
         "SLEEP_SECONDS": 1
     },
-    "WALLET_SCORING": {
-        "MIN_TRADES": 5,
-        "MIN_SIGNIFICANT_WINS": 3,
-        "ROI_CONCENTRATION_TOP_N": 3,
-        "ROI_CONCENTRATION_MAX_RATIO": 0.99,
-        "ROI_WIN_THRESHOLD": 50,
-        "ROI_LOSS_THRESHOLD": -20,
-        "ROI_SCORE_BASE": 50,
-        "ROI_SCORE_DIVISOR": 4.5,
-        "ACTIVITY_LOG_MAX_TRADES": 20,
-        "SUCCESS_SCORE_MULTIPLIER": 2,
-        "QUALITY_BONUS_MULTIPLIER": 50,
-        "SCORE_WEIGHTS": {"ROI": 0.40, "ACTIVITY": 0.25, "SUCCESS": 0.25, "QUALITY": 0.10},
-        "CLASS_THRESHOLDS": {"ELITE": 80, "EXCELLENT": 60, "BON": 40, "MOYEN": 20}
-    },
-    "TIER_ANALYSIS": {
-        "TIER_START_USD": 1000,
-        "TIER_END_USD": 12000,
-        "TIER_STEP_USD": 1000,
-        "WIN_ROI_THRESHOLD": 50,
-        "LOSS_ROI_THRESHOLD": -20
+    "WALLET_SCORER": {
+        "MIN_TRADES_WATCHLIST": 10,
+        "MIN_TRADES_VALID": 10,
+        "GOOD_ROI_THRESHOLD": 50.0,
+        "MIN_TRADE_SIZE_USD": 50.0,
+        "TRADE_NEGATIVE_POINTS": -0.2,
+        "TRADE_POINTS_MAX": 3.0,
+        "WEIGHT_TRADE_SCORE": 40.0,
+        "WEIGHT_ROI_12M": 35.0,
+        "WEIGHT_SUCCESS_RATE": 25.0,
+        "ROI_12M_CAP": 200.0,
+        "MIN_TRADES_90J_ACTIVE": 3,
+        "ROI_1M_HARD_FLOOR": -20.0,
+        "MIN_ROI_1M_ABSOLUTE": 50.0,
+        "RECENCY_MULT_STRONG": 1.0,
+        "RECENCY_MULT_FLAT": 0.85,
+        "RECENCY_MULT_NEGATIVE": 0.60,
+        "RECENCY_MULT_MISSING": 0.75,
+        "ACTIVITY_MULT_30J_3PLUS": 1.0,
+        "ACTIVITY_MULT_30J_1_2": 0.8,
+        "ACTIVITY_MULT_90J_3PLUS_NO30J": 0.5,
+        "TIER_THRESHOLDS": {"TIER1": 30, "TIER2": 20},
     },
     "OPTIMAL_THRESHOLD": {
-        "ALPHA_BAYESIAN": 30,
-        "MIN_TRADES_THRESHOLD": 5,
-        "MIN_WINRATE_THRESHOLD": 20.0,
-        "MIN_RELIABLE_ROI": 70,
+        "ALPHA_BAYESIAN": 10,
+        "MIN_TRADES_THRESHOLD": 3,
+        "MIN_WINRATE_THRESHOLD": 40,
+        "MIN_RELIABLE_ROI": 10,
         "STABILITY_THRESHOLD": 0.15,
-        "QUALITY_THRESHOLD": 0.1,
-        "MIN_TRADES_QUALITY": 10,
-        "FILTER_QUALITY_MIN": 0.3,
         "PERCENTILE": 60,
-        "J_SCORE_WEIGHTS": {"ROI": 0.5, "WINRATE": 0.3, "TRADES_LOG": 0.2},
         "PENALTY_COEF": 0.05,
+        "J_SCORE_WEIGHTS": {"ROI": 0.25, "WINRATE": 0.25, "TRADES_LOG": 0.50},
         "ROI_SCORE_MAX": 300,
-        "WINRATE_SCORE_MAX": 80,
+        "WINRATE_SCORE_MAX": 100,
         "VOLUME_SCORE_MAX_TRADES": 50,
         "NEUTRAL_RATE_TARGET": 20,
         "NEUTRAL_RATE_OVER_PENALTY": 30,
-        "QUALITY_BASE": 0.1,
-        "QUALITY_SCALE": 0.9,
-        "STATUS_THRESHOLDS": {
-            "EXCEPTIONAL": 0.9,
-            "EXCELLENT": 0.7,
-            "GOOD": 0.5,
-            "AVERAGE": 0.3,
-            "NEUTRAL": 0.15
-        },
+        "QUALITY_BASE": 0.0,
+        "QUALITY_SCALE": 1.0,
+        "STATUS_THRESHOLDS": {"EXCEPTIONAL": 0.9, "EXCELLENT": 0.75, "GOOD": 0.60, "AVERAGE": 0.45, "NEUTRAL": 0.05},
         "MIN_INSERT_QUALITY": 0.3,
-        "MIN_OPTIMAL_ROI": 70,
-        "MIN_OPTIMAL_WINRATE": 20
+        "MIN_OPTIMAL_ROI": 15,
+        "MIN_OPTIMAL_WINRATE": 40,
+        "QUALITY_THRESHOLD": 0.5,
+        "MIN_TRADES_QUALITY": 5,
+        "FILTER_QUALITY_MIN": 0.0
     }
 }
 
@@ -185,9 +189,9 @@ WALLET_TRACKER = {
 
 WALLET_BALANCES = {
     "MIN_TOKEN_VALUE_USD": 500,
-    "MIN_WALLET_VALUE_USD": 100000,
+    "MIN_WALLET_VALUE_USD": 50000,
     "MAX_WALLET_VALUE_USD": 50000000,
-    "MIN_TOKENS_PER_WALLET": 3,
+    "MIN_TOKENS_PER_WALLET": 2,
     "MAX_TOKENS_PER_WALLET": 60,
     "BATCH_SIZE": 5,
     "DELAY_BETWEEN_BATCHES": 5,
@@ -227,7 +231,7 @@ TRACKING_LIVE = {
     "HOURS_LOOKBACK_DEFAULT": 24,
     "BATCH_SIZE": 5,
     "DELAY_BETWEEN_BATCHES": 10,
-    "SMART_WALLETS_LIMIT": 100,
+    "SMART_WALLETS_LIMIT": 15,
     "TOKEN_LOOKUP_DELAY": 0.3,
     "RATE_LIMIT_SLEEP_SECONDS": 5,
     "HTTP_TIMEOUT_SECONDS": 20,
@@ -296,6 +300,7 @@ SMART_CONTRACT_REMOVER = {
     "MAX_RETRIES": 3,
     "TIMEOUT_SECONDS": 10
 }
+
 
 TELEGRAM = {
     "QUALITY_MARKET_CAP_THRESHOLDS": {

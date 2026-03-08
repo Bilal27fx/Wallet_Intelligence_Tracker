@@ -2,6 +2,7 @@ import os
 import json
 import yaml
 import time
+import random
 import requests
 import pandas as pd
 from dotenv import load_dotenv
@@ -16,19 +17,30 @@ load_dotenv(dotenv_path=ENV_PATH)
 logger = get_logger("token_discovery.manual")
 
 _TDM = TOKEN_DISCOVERY_MANUAL
-DUNE_API_KEY = os.getenv("DUNE_API_KEY")
 _DAO = WalletBruteDAO()
 
-HEADERS = {
-    "Content-Type": "application/json",
-    "X-Dune-API-Key": DUNE_API_KEY
-}
+_DUNE_KEYS = [k for k in [os.getenv("DUNE_API_KEY"), os.getenv("DUNE_API_KEY_2")] if k]
+_key_index = 0
+
+
+def _next_headers() -> dict:
+    """Retourne des headers avec rotation de clé et User-Agent aléatoire."""
+    if not _DUNE_KEYS:
+        raise RuntimeError("Aucune clé Dune trouvée (DUNE_API_KEY / DUNE_API_KEY_2)")
+    global _key_index
+    key = _DUNE_KEYS[_key_index % len(_DUNE_KEYS)]
+    _key_index += 1
+    return {
+        "Content-Type": "application/json",
+        "X-Dune-API-Key": key,
+        "User-Agent": random.choice(_TDM["USER_AGENTS"]),
+    }
 
 
 def execute_dune_query(query_id, parameters):
     """Exécute une requête Dune et retourne un DataFrame."""
     exec_url = f"{_TDM['DUNE_BASE_URL']}/query/{query_id}/execute"
-    res = requests.post(exec_url, headers=HEADERS, json={"query_parameters": parameters})
+    res = requests.post(exec_url, headers=_next_headers(), json={"query_parameters": parameters})
     if res.status_code != 200:
         raise Exception(f"❌ Lancement échoué : {res.text}")
 
@@ -40,7 +52,7 @@ def execute_dune_query(query_id, parameters):
 
     waited = 0
     while waited < _TDM["MAX_WAIT_TIME_SECONDS"]:
-        status = requests.get(status_url, headers=HEADERS).json()
+        status = requests.get(status_url, headers=_next_headers()).json()
         state = status.get("state")
         logger.info(f"⌛ Status : {state} — {waited}s")
 
@@ -55,7 +67,7 @@ def execute_dune_query(query_id, parameters):
     if waited >= _TDM["MAX_WAIT_TIME_SECONDS"]:
         raise TimeoutError("⏰ Timeout dépassé")
 
-    res = requests.get(result_url, headers=HEADERS)
+    res = requests.get(result_url, headers=_next_headers())
     rows = res.json().get("result", {}).get("rows", [])
     return pd.DataFrame(rows)
 
@@ -184,6 +196,10 @@ def ensure_wallet_brute_table():
 
 def run_manual_token_discovery():
     """Exécute la découverte de tokens à partir du JSON manual."""
+    if not _DUNE_KEYS:
+        logger.error("❌ Aucune clé Dune configurée. Vérifie DUNE_API_KEY / DUNE_API_KEY_2 dans .env")
+        return
+
     if not _TDM["INPUT_JSON_PATH"].exists():
         logger.error(f"❌ Fichier d'entrée non trouvé: {_TDM['INPUT_JSON_PATH']}")
         return
@@ -294,6 +310,10 @@ def _get_tokens_from_db():
 
 def run_discovery_from_db():
     """Découverte automatique depuis explosive_tokens_detected (type 3, perf=hours_since_now)."""
+    if not _DUNE_KEYS:
+        logger.error("❌ Aucune clé Dune configurée. Vérifie DUNE_API_KEY / DUNE_API_KEY_2 dans .env")
+        return
+
     if not ensure_wallet_brute_table():
         logger.error("Impossible de créer/vérifier la table wallet_brute")
         return

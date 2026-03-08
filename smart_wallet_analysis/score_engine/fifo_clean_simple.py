@@ -145,7 +145,9 @@ class SimpleFIFOAnalyzer:
         profit_loss = total_gains - total_invested
         
         is_airdrop = total_invested <= _FIFO["AIRDROP_MAX_INVESTED"]
-        
+        first_transaction_date = transactions[0]['date'] if transactions else None
+        last_transaction_date = transactions[-1]['date'] if transactions else None
+
         return {
             'wallet_address': None,
             'token_symbol': symbol,
@@ -153,6 +155,7 @@ class SimpleFIFOAnalyzer:
             'remaining_quantity': remaining_qty,
             'total_invested': total_invested,
             'total_realized': total_realized,
+            'total_gains': total_gains,
             'weighted_avg_buy_price': avg_buy_price,
             'weighted_avg_sell_price': avg_sell_price,
             'current_price': current_price,
@@ -163,7 +166,9 @@ class SimpleFIFOAnalyzer:
             'in_portfolio': 1 if remaining_qty > 0 else 0,
             'total_entries': len(entries),
             'total_exits': len(exits),
-            'total_transactions': len(transactions)
+            'total_transactions': len(transactions),
+            'first_transaction_date': first_transaction_date,
+            'last_transaction_date': last_transaction_date,
         }
     
     def save_token_analytics(self, token_metrics: Dict) -> bool:
@@ -174,30 +179,35 @@ class SimpleFIFOAnalyzer:
                 cursor.execute("""
                     INSERT OR REPLACE INTO token_analytics (
                         wallet_address, token_symbol, contract_address,
-                        remaining_quantity, total_invested, total_realized,
+                        total_invested, total_realized, current_value, total_gains,
+                        profit_loss, roi_percentage, is_airdrop, airdrop_ratio,
+                        total_transactions, total_entries, total_exits,
                         weighted_avg_buy_price, weighted_avg_sell_price,
-                        current_price, current_value, profit_loss, roi_percentage,
-                        is_airdrop, in_portfolio, total_entries, total_exits,
-                        total_transactions, analysis_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        current_price, remaining_quantity, in_portfolio,
+                        first_transaction_date, last_transaction_date, analysis_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     token_metrics['wallet_address'],
                     token_metrics['token_symbol'],
                     token_metrics['contract_address'],
-                    token_metrics['remaining_quantity'],
                     token_metrics['total_invested'],
                     token_metrics['total_realized'],
-                    token_metrics['weighted_avg_buy_price'],
-                    token_metrics['weighted_avg_sell_price'],
-                    token_metrics['current_price'],
                     token_metrics['current_value'],
+                    token_metrics['total_gains'],
                     token_metrics['profit_loss'],
                     token_metrics['roi_percentage'],
                     token_metrics['is_airdrop'],
-                    token_metrics['in_portfolio'],
+                    0,
+                    token_metrics['total_transactions'],
                     token_metrics['total_entries'],
                     token_metrics['total_exits'],
-                    token_metrics['total_transactions'],
+                    token_metrics['weighted_avg_buy_price'],
+                    token_metrics['weighted_avg_sell_price'],
+                    token_metrics['current_price'],
+                    token_metrics['remaining_quantity'],
+                    token_metrics['in_portfolio'],
+                    token_metrics['first_transaction_date'],
+                    token_metrics['last_transaction_date'],
                     datetime.now().isoformat()
                 ))
                 conn.commit()
@@ -279,9 +289,12 @@ def run_smart_wallets_fifo():
     try:
         with sqlite3.connect(analyzer.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT wallet_address FROM smart_wallets")
+            # Import TRACKING_LIVE pour récupérer la limite
+            from smart_wallet_analysis.config import TRACKING_LIVE
+            limit = TRACKING_LIVE["SMART_WALLETS_LIMIT"]
+            cursor.execute("SELECT wallet_address FROM wallet_scoring ORDER BY score_final DESC LIMIT ?", (limit,))
             smart_wallets = [row[0] for row in cursor.fetchall()]
-            logger.info(f"{len(smart_wallets)} smart wallets trouvés")
+            logger.info(f"{len(smart_wallets)} wallets trouvés depuis wallet_scoring (top {limit})")
     except sqlite3.Error as e:
         logger.error(f"Erreur lecture smart wallets: {e}")
         return False

@@ -5,3 +5,5 @@ PyYAML
 requests
 schedule
 urllib3
+crewai
+crewai-tools

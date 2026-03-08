@@ -25,17 +25,43 @@ class APIKeyManager:
             raise ValueError("Aucune clé API Zerion trouvée dans .env")
         self.current_index = 0
         self.current_key = self.keys[self.current_index]
+        # Timestamp (epoch) à partir duquel chaque clé est réutilisable.
+        self.key_available_at = [0.0 for _ in self.keys]
 
     def get_key(self):
         return self.current_key
 
-    def rotate_key(self):
+    def _switch_to_index(self, idx: int):
+        self.current_index = idx
+        self.current_key = self.keys[idx]
+        logger.info(f"Rotation vers clé API #{self.current_index + 1}")
+
+    def mark_current_rate_limited(self, cooldown_seconds: int):
+        if cooldown_seconds <= 0:
+            return
+        self.key_available_at[self.current_index] = max(
+            self.key_available_at[self.current_index],
+            time.time() + cooldown_seconds
+        )
+
+    def rotate_key(self, cooldown_seconds: int = 0):
+        self.mark_current_rate_limited(cooldown_seconds)
         if len(self.keys) <= 1:
             return False
-        self.current_index = (self.current_index + 1) % len(self.keys)
-        self.current_key = self.keys[self.current_index]
-        logger.info(f"Rotation vers clé API #{self.current_index + 1}")
-        return True
+
+        now = time.time()
+        start = self.current_index
+        for step in range(1, len(self.keys) + 1):
+            idx = (start + step) % len(self.keys)
+            if self.key_available_at[idx] <= now:
+                self._switch_to_index(idx)
+                return True
+
+        return False
+
+    def seconds_until_any_key_available(self) -> float:
+        now = time.time()
+        return max(0.0, min(self.key_available_at) - now)
 
 
 api_manager = APIKeyManager()
@@ -52,11 +78,26 @@ class SimpleWalletHistoryExtractor:
         self.headers["authorization"] = f"Basic {api_manager.get_key()}"
 
     def _handle_rate_limit(self, retry_fn=None):
-        if api_manager.rotate_key():
+        key_cooldown_seconds = int(_WT.get("KEY_COOLDOWN_SECONDS", 60))
+
+        if api_manager.rotate_key(cooldown_seconds=key_cooldown_seconds):
             self._update_headers()
             time.sleep(_WT["RATE_LIMIT_SLEEP_SECONDS"])
             return True
-        return False
+
+        wait_seconds = max(
+            float(_WT["RATE_LIMIT_SLEEP_SECONDS"]),
+            api_manager.seconds_until_any_key_available()
+        )
+        logger.warning(
+            "Toutes les clés Zerion sont en cooldown après 429, pause %.1fs",
+            wait_seconds
+        )
+        time.sleep(wait_seconds)
+
+        if api_manager.rotate_key():
+            self._update_headers()
+        return True
 
     def get_wallets_to_process(self) -> List[str]:
         """Wallets actifs non encore extraits depuis la table wallets"""
@@ -101,18 +142,38 @@ class SimpleWalletHistoryExtractor:
                     tx_date = datetime.fromisoformat(transaction['date'].replace('Z', '+00:00'))
                 except Exception:
                     tx_date = datetime.now()
-                conn.execute("""
-                    INSERT OR IGNORE INTO transaction_history (
-                        wallet_address, fungible_id, symbol, date, hash,
-                        operation_type, action_type, swap_description, contract_address,
-                        quantity, price_per_token, total_value_usd, direction
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
-                """, (
-                    wallet_address, token_info['fungible_id'], token_info['symbol'], tx_date,
-                    transaction['transaction_hash'], transaction['operation_type'], transaction['action_type'],
-                    token_info['contract_address'], transaction['quantity'],
-                    transaction['price_per_token'], transaction['value_usd'], transaction.get('direction', '')
-                ))
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO transaction_history (
+                            wallet_address, fungible_id, symbol, date, hash,
+                            operation_type, action_type, swap_description, contract_address,
+                            quantity, price_per_token, total_value_usd, direction,
+                            recipient_address, sender_address
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        wallet_address, token_info['fungible_id'], token_info['symbol'], tx_date,
+                        transaction['transaction_hash'], transaction['operation_type'], transaction['action_type'],
+                        token_info['contract_address'], transaction['quantity'],
+                        transaction['price_per_token'], transaction['value_usd'], transaction.get('direction', ''),
+                        transaction.get('recipient_address'), transaction.get('sender_address')
+                    ))
+                except sqlite3.OperationalError as e:
+                    # Compatibilité avec anciennes DB ne possédant pas encore sender/recipient.
+                    if "recipient_address" in str(e) or "sender_address" in str(e):
+                        conn.execute("""
+                            INSERT OR IGNORE INTO transaction_history (
+                                wallet_address, fungible_id, symbol, date, hash,
+                                operation_type, action_type, swap_description, contract_address,
+                                quantity, price_per_token, total_value_usd, direction
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                        """, (
+                            wallet_address, token_info['fungible_id'], token_info['symbol'], tx_date,
+                            transaction['transaction_hash'], transaction['operation_type'], transaction['action_type'],
+                            token_info['contract_address'], transaction['quantity'],
+                            transaction['price_per_token'], transaction['value_usd'], transaction.get('direction', '')
+                        ))
+                    else:
+                        raise
         except sqlite3.Error as e:
             logger.error(f"Erreur sauvegarde transaction: {e}")
 
@@ -224,12 +285,22 @@ class SimpleWalletHistoryExtractor:
 
             for fungible_id, token_transfers in transfers_by_token.items():
                 total_qty, total_val, direction, main = 0, 0, None, None
+                sender_address, recipient_address = None, None
                 for t in token_transfers:
                     total_qty += float(t.get('quantity', {}).get('numeric', 0) or 0)
                     total_val += float(t.get('value', 0) or 0)
                     if main is None:
                         main = t
                         direction = t.get('direction', '')
+                    transfer_direction = t.get('direction', '')
+                    if transfer_direction == 'out' and recipient_address is None:
+                        recipient = t.get('recipient')
+                        if recipient:
+                            recipient_address = recipient
+                    elif transfer_direction == 'in' and sender_address is None:
+                        sender = t.get('sender')
+                        if sender:
+                            sender_address = sender
 
                 if not main or total_qty <= 0 or direction == 'self':
                     continue
@@ -269,7 +340,9 @@ class SimpleWalletHistoryExtractor:
                     'quantity': total_qty,
                     'price_per_token': total_val / total_qty,
                     'value_usd': total_val,
-                    'operation_type': operation_type
+                    'operation_type': operation_type,
+                    'recipient_address': recipient_address,
+                    'sender_address': sender_address
                 })
 
         for fid in token_histories:

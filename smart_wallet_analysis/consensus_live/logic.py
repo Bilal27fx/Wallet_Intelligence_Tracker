@@ -126,8 +126,10 @@ def detect_live_consensus(df_transactions, existing_consensus=None):
             "optimal_winrate": "first"
         })
 
+        min_investment = CONSENSUS_LIVE["MIN_INVESTMENT_USD"]
         thresholds = wallet_sums["optimal_threshold_tier"] * 1000
-        qualified_wallets = wallet_sums[wallet_sums["investment_usd"] >= thresholds]
+        effective_thresholds = thresholds.apply(lambda x: max(x, min_investment))
+        qualified_wallets = wallet_sums[wallet_sums["investment_usd"] >= effective_thresholds]
 
         status_series = qualified_wallets["threshold_status"].astype(str).str.upper()
         exceptional_count = status_series.apply(_is_exceptional_status).sum()

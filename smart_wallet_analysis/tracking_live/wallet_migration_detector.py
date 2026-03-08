@@ -179,8 +179,8 @@ class WalletMigrationDetector:
             conn = sqlite3.connect(self.db_path)
             wallets_df = pd.read_sql_query(
                 "SELECT w.wallet_address, w.total_portfolio_value "
-                "FROM wallets w INNER JOIN smart_wallets sw ON w.wallet_address = sw.wallet_address "
-                "WHERE w.is_active = 1 AND w.total_portfolio_value > 0 "
+                "FROM wallets w INNER JOIN wallet_scoring ws ON w.wallet_address = ws.wallet_address "
+                "WHERE w.is_active = 1 AND w.total_portfolio_value > 0 AND ws.score_final IS NOT NULL "
                 "ORDER BY w.total_portfolio_value DESC",
                 conn
             )

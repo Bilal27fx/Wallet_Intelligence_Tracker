@@ -17,9 +17,7 @@ from smart_wallet_analysis.config import PIPELINES, SMART_WALLETS_PIPELINE
 from smart_wallet_analysis.logger import get_logger
 from smart_wallet_analysis.tracking_live.run import run_complete_live_tracking
 from smart_wallet_analysis.score_engine.fifo_clean_simple import run_smart_wallets_fifo
-from smart_wallet_analysis.score_engine.wallet_scoring_system import score_all_wallets, save_qualified_wallets
-from smart_wallet_analysis.score_engine.simple_wallet_analyzer import analyze_qualified_wallets
-from smart_wallet_analysis.score_engine.optimal_threshold_analyzer import OptimalThresholdAnalyzer
+from smart_wallet_analysis.score_engine.wallet_scorer import run_wallet_scoring
 from smart_wallet_analysis.consensus_live.consensus_live_detector import run_live_consensus_detection
 from smart_wallet_analysis.Telegram.telegram_bot import send_consensus_to_telegram
 
@@ -108,20 +106,13 @@ def run_tracking_and_fifo_pipeline():
     logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_BETWEEN_STEPS_SECONDS"])
     time.sleep(_SW["PAUSE_BETWEEN_STEPS_SECONDS"])
 
-    _log_section("⭐ ÉTAPE 3/6: SCORING DES WALLETS")
+    _log_section("⭐ ÉTAPE 3/4: SCORING DES WALLETS")
 
     step3_start = time.time()
     try:
-        scored_wallets = score_all_wallets(min_score=_PL["SCORING_MIN_SCORE_DEFAULT"])
-
-        if scored_wallets:
-            save_qualified_wallets(scored_wallets)
-            step_times['scoring'] = time.time() - step3_start
-            logger.info("✅ Étape 3 terminée en %.2fs", step_times['scoring'])
-            logger.info("%s wallets qualifiés", len(scored_wallets))
-        else:
-            logger.warning("⚠️ Aucun wallet qualifié")
-            step_times['scoring'] = time.time() - step3_start
+        run_wallet_scoring()
+        step_times['scoring'] = time.time() - step3_start
+        logger.info("✅ Étape 3 terminée en %.2fs", step_times['scoring'])
     except Exception as e:
         logger.error("❌ Erreur lors du scoring: %s", e)
         return False
@@ -129,44 +120,7 @@ def run_tracking_and_fifo_pipeline():
     logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_BETWEEN_STEPS_SECONDS"])
     time.sleep(_SW["PAUSE_BETWEEN_STEPS_SECONDS"])
 
-    _log_section("📊 ÉTAPE 4/6: ANALYSE PAR PALIERS (3K-12K)")
-
-    step4_start = time.time()
-    try:
-        analyze_qualified_wallets()
-        step_times['paliers'] = time.time() - step4_start
-        logger.info(
-            "✅ Étape 4 terminée en %.2fs (%.1f min)",
-            step_times['paliers'],
-            step_times['paliers'] / 60
-        )
-    except Exception as e:
-        logger.error("❌ Erreur lors de l'analyse par paliers: %s", e)
-        return False
-
-    logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_BETWEEN_STEPS_SECONDS"])
-    time.sleep(_SW["PAUSE_BETWEEN_STEPS_SECONDS"])
-
-    _log_section("🎯 ÉTAPE 5/6: ANALYSE DES SEUILS OPTIMAUX")
-
-    step5_start = time.time()
-    try:
-        analyzer = OptimalThresholdAnalyzer()
-        analyzer.analyze_all_qualified_wallets(quality_filter=_SW["QUALITY_FILTER"])
-        step_times['seuils'] = time.time() - step5_start
-        logger.info(
-            "✅ Étape 5 terminée en %.2fs (%.1f min)",
-            step_times['seuils'],
-            step_times['seuils'] / 60
-        )
-    except Exception as e:
-        logger.error("❌ Erreur lors de l'analyse des seuils: %s", e)
-        return False
-
-    logger.info("⏸️ Pause de %s secondes...", _SW["PAUSE_BETWEEN_STEPS_SECONDS"])
-    time.sleep(_SW["PAUSE_BETWEEN_STEPS_SECONDS"])
-
-    _log_section("🔍 ÉTAPE 6/6: DÉTECTION CONSENSUS LIVE")
+    _log_section("🔍 ÉTAPE 4/4: DÉTECTION CONSENSUS LIVE")
 
     step6_start = time.time()
     try:
@@ -194,9 +148,7 @@ def run_tracking_and_fifo_pipeline():
     logger.info("• Étape 1 (Tracking): %.2fs (%.1f min)", step_times['tracking'], step_times['tracking'] / 60)
     logger.info("• Étape 2 (FIFO): %.2fs (%.1f min)", step_times['fifo'], step_times['fifo'] / 60)
     logger.info("• Étape 3 (Scoring): %.2fs", step_times['scoring'])
-    logger.info("• Étape 4 (Paliers): %.2fs (%.1f min)", step_times['paliers'], step_times['paliers'] / 60)
-    logger.info("• Étape 5 (Seuils): %.2fs (%.1f min)", step_times['seuils'], step_times['seuils'] / 60)
-    logger.info("• Étape 6 (Consensus): %.2fs (%.1f min)", step_times['consensus'], step_times['consensus'] / 60)
+    logger.info("• Étape 4 (Consensus): %.2fs (%.1f min)", step_times['consensus'], step_times['consensus'] / 60)
     logger.info("⏰ Fin: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
     return True

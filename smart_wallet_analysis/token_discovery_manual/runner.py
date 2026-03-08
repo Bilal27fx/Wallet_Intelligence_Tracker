@@ -23,7 +23,7 @@ def run_token_discovery_pipeline():
     logger.info("[3/4] Détection période d'explosion")
     run_explosion_detection()
 
-    logger.info("[4/4] Dune wallet discovery")
+    logger.info("[4/4] Dune wallet discovery (mode automatique DB)")
     run_discovery_from_db()
 
     logger.info("=== TOKEN DISCOVERY PIPELINE TERMINÉ ===")

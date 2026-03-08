@@ -44,17 +44,17 @@ def rotate_api_key():
 
 
 def get_smart_wallets_from_db():
-    """Récupère les smart wallets actifs."""
+    """Récupère le top N wallets depuis wallet_scoring."""
     try:
         with sqlite3.connect(DB_PATH) as conn:
             df = pd.read_sql_query("""
-                SELECT wallet_address FROM smart_wallets
-                WHERE optimal_threshold_tier > 0
-                ORDER BY optimal_threshold_tier DESC
+                SELECT wallet_address FROM wallet_scoring
+                WHERE score_final IS NOT NULL
+                ORDER BY score_final DESC
                 LIMIT ?
             """, conn, params=[_TL["SMART_WALLETS_LIMIT"]])
         wallets = df['wallet_address'].tolist()
-        logger.info(f"{len(wallets)} smart wallets chargés")
+        logger.info(f"{len(wallets)} smart wallets chargés depuis wallet_scoring (top {_TL['SMART_WALLETS_LIMIT']})")
         return wallets
     except Exception as e:
         logger.error(f"Erreur récupération wallets: {e}")
@@ -180,7 +180,7 @@ def get_existing_wallet_tokens(wallet_address, filter_smart_wallets=True):
                            t.chain, t.fungible_id, t.updated_at
                     FROM tokens t
                     WHERE t.wallet_address = ? AND t.in_portfolio = 1
-                    AND EXISTS (SELECT 1 FROM smart_wallets sw WHERE sw.wallet_address = t.wallet_address AND sw.optimal_threshold_tier > 0)
+                    AND EXISTS (SELECT 1 FROM wallet_scoring ws WHERE ws.wallet_address = t.wallet_address AND ws.score_final IS NOT NULL)
                 """, (wallet_address,))
             else:
                 cursor.execute("""
@@ -262,7 +262,7 @@ def detect_position_changes_sql(wallet_address, current_tokens_data, session_id)
             SELECT t.symbol, t.current_amount, t.current_usd_value,
                    COALESCE(t.current_price_per_token, 0), t.contract_address, t.fungible_id
             FROM tokens t WHERE t.wallet_address = ? AND t.in_portfolio = 1
-            AND EXISTS (SELECT 1 FROM smart_wallets sw WHERE sw.wallet_address = t.wallet_address AND sw.optimal_threshold_tier > 0)
+            AND EXISTS (SELECT 1 FROM wallet_scoring ws WHERE ws.wallet_address = t.wallet_address AND ws.score_final IS NOT NULL)
         """, (wallet_address,))
 
         previous = {row[0]: {"amount": row[1] or 0, "usd_value": row[2] or 0, "price_per_token": row[3] or 0,

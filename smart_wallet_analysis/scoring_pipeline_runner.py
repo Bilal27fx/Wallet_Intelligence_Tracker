@@ -11,9 +11,7 @@ from smart_wallet_analysis.config import DB_PATH, PIPELINES
 from smart_wallet_analysis.logger import get_logger
 from smart_wallet_analysis.tracking_live.run import run_rescoring_transaction_update
 from smart_wallet_analysis.score_engine.fifo_clean_simple import SimpleFIFOAnalyzer
-from smart_wallet_analysis.score_engine.wallet_scoring_system import score_all_wallets
-from smart_wallet_analysis.score_engine.simple_wallet_analyzer import analyze_qualified_wallets
-from smart_wallet_analysis.score_engine.optimal_threshold_analyzer import OptimalThresholdAnalyzer
+from smart_wallet_analysis.score_engine.wallet_scorer import run_wallet_scoring
 from smart_wallet_analysis.wallet_tracker.wallet_token_history_simple import extract_wallet_simple_history
 
 _PL = PIPELINES
@@ -143,8 +141,7 @@ def run_wallet_scoring_full():
     _log_section("📊 ÉTAPE 3: SCORING DES WALLETS")
 
     try:
-        score_all_wallets(min_score=_PL["SCORING_MIN_SCORE_FULL"])
-
+        run_wallet_scoring()
         logger.info("✅ Scoring terminé")
         return True
 
@@ -153,89 +150,26 @@ def run_wallet_scoring_full():
         return False
 
 
-def run_simple_analysis():
-    """Lance l'analyse simple par paliers."""
-    _log_section("📊 ÉTAPE 4: ANALYSE PAR TIERS D'INVESTISSEMENT")
-
-    try:
-        analyze_qualified_wallets()
-
-        logger.info("✅ Analyse par tiers terminée")
-        return True
-
-    except Exception as e:
-        logger.error("❌ Erreur simple analysis: %s", e)
-        return False
-
-
-def run_optimal_threshold():
-    """Calcule les seuils optimaux et sélectionne les smart wallets."""
-    _log_section("📊 ÉTAPE 5: SÉLECTION DES SMART WALLETS")
-
-    try:
-        optimizer = OptimalThresholdAnalyzer()
-        optimizer.analyze_all_qualified_wallets()
-
-        logger.info("✅ Sélection smart wallets terminée")
-        return True
-
-    except Exception as e:
-        logger.error("❌ Erreur optimal threshold: %s", e)
-        return False
-
-
 def get_final_stats():
     """Retourne les statistiques finales du pipeline."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-
-        cursor.execute("SELECT COUNT(*) FROM smart_wallets")
-        smart_count = cursor.fetchone()[0]
-
-        cursor.execute("SELECT COUNT(*) FROM wallet_qualified")
-        qualified_count = cursor.fetchone()[0]
-
         cursor.execute("SELECT COUNT(DISTINCT wallet_address) FROM token_analytics")
         analyzed_count = cursor.fetchone()[0]
-
+        cursor.execute("SELECT COUNT(*) FROM wallet_scoring WHERE score_final IS NOT NULL")
+        scored_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM wallet_watchlist WHERE statut = 'pending'")
+        watchlist_count = cursor.fetchone()[0]
         conn.close()
-
         return {
-            'smart_wallets': smart_count,
-            'qualified_wallets': qualified_count,
-            'analyzed_wallets': analyzed_count
+            'analyzed_wallets': analyzed_count,
+            'scored_wallets': scored_count,
+            'watchlist_wallets': watchlist_count,
         }
-
     except Exception as e:
         logger.error("❌ Erreur récupération stats: %s", e)
         return {}
-
-
-def run_analysis_and_selection_only():
-    """Lance uniquement l'analyse par paliers puis la sélection finale."""
-    start_time = time.time()
-
-    _log_section("🎯 ÉTAPES 4-5: ANALYSE & SÉLECTION", width=80)
-
-    if not run_simple_analysis():
-        logger.error("❌ Erreur lors de l'analyse simple")
-        return False
-
-    if not run_optimal_threshold():
-        logger.error("❌ Erreur lors de la sélection smart wallets")
-        return False
-
-    elapsed = time.time() - start_time
-    stats = get_final_stats()
-
-    _log_section("✅ ANALYSE & SÉLECTION TERMINÉES", width=80)
-    logger.info("⏱️ Durée: %.1f secondes", elapsed)
-    logger.info("📊 Wallets analysés: %s", stats.get('analyzed_wallets', 0))
-    logger.info("🎯 Wallets qualifiés: %s", stats.get('qualified_wallets', 0))
-    logger.info("⭐ Smart wallets: %s", stats.get('smart_wallets', 0))
-
-    return True
 
 
 def run_complete_scoring_pipeline():
@@ -261,22 +195,14 @@ def run_complete_scoring_pipeline():
         logger.error("❌ Erreur lors du scoring")
         return False
 
-    if not run_simple_analysis():
-        logger.error("❌ Erreur lors de l'analyse simple")
-        return False
-
-    if not run_optimal_threshold():
-        logger.error("❌ Erreur lors de la sélection smart wallets")
-        return False
-
     elapsed = time.time() - start_time
     stats = get_final_stats()
 
     _log_section("✅ PIPELINE 2 TERMINÉ AVEC SUCCÈS", width=80)
     logger.info("⏱️ Durée totale: %.1f minutes", elapsed / 60)
     logger.info("📊 Wallets analysés: %s", stats.get('analyzed_wallets', 0))
-    logger.info("🎯 Wallets qualifiés: %s", stats.get('qualified_wallets', 0))
-    logger.info("⭐ Smart wallets: %s", stats.get('smart_wallets', 0))
+    logger.info("⭐ Wallets scorés: %s", stats.get('scored_wallets', 0))
+    logger.info("👀 Watchlist: %s", stats.get('watchlist_wallets', 0))
     logger.info("🔄 Wallets avec changements: %s", changes)
     logger.info("🏁 Fin: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
