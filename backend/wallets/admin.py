@@ -1,10 +1,15 @@
 """Wallets admin."""
 from django.contrib import admin
 from django.contrib import messages
+from django.shortcuts import redirect
+from django.urls import path
+from django.template.response import TemplateResponse
+from django.utils.html import format_html
 from .models import (
     Wallet, Token, Transaction, WalletPositionChange,
     WalletBrute, TokenAnalytics, WalletTierPerformance,
-    WalletQualified, SmartWallet, ConsensusSignal
+    WalletQualified, SmartWallet, ConsensusSignal, PipelineControl,
+    ExplosiveToken, TokenPriceHistory
 )
 
 
@@ -121,3 +126,124 @@ class ConsensusSignalAdmin(admin.ModelAdmin):
     search_fields = ['token_symbol', 'contract_address']
     date_hierarchy = 'detected_at'
     filter_horizontal = ['wallets']
+
+
+@admin.register(PipelineControl)
+class PipelineControlAdmin(admin.ModelAdmin):
+    """Custom admin for pipeline control panel with big buttons."""
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        """Custom control panel view with big buttons."""
+        from django_celery_beat.models import PeriodicTask
+        from django_celery_results.models import TaskResult
+
+        # Get scheduled tasks
+        scheduled_tasks = PeriodicTask.objects.filter(enabled=True).order_by('name')
+
+        # Get recent task executions (last 20)
+        recent_tasks = TaskResult.objects.select_related().order_by('-date_created')[:20]
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Pipeline Control Panel',
+            'scheduled_tasks': scheduled_tasks,
+            'recent_tasks': recent_tasks,
+            'opts': self.model._meta,
+        }
+
+        return TemplateResponse(
+            request,
+            'admin/wallets/pipeline_control_panel.html',
+            context
+        )
+
+    def get_urls(self):
+        """Add custom URLs for pipeline execution."""
+        urls = super().get_urls()
+        custom_urls = [
+            path('run_discovery/', self.admin_site.admin_view(self.run_discovery_view), name='run_discovery_pipeline'),
+            path('run_tracking/', self.admin_site.admin_view(self.run_tracking_view), name='run_tracking_pipeline'),
+            path('run_scoring/', self.admin_site.admin_view(self.run_scoring_view), name='run_scoring_pipeline'),
+            path('run_consensus/', self.admin_site.admin_view(self.run_consensus_view), name='run_consensus_detection'),
+        ]
+        return custom_urls + urls
+
+    def run_discovery_view(self, request):
+        """Execute discovery pipeline."""
+        from wallets.tasks import run_discovery_pipeline
+        temporality = request.GET.get('temporality', '14d')
+        result = run_discovery_pipeline.delay(temporality=temporality)
+        messages.success(
+            request,
+            format_html(
+                '✓ <strong>Discovery Pipeline</strong> lancé avec succès ({})!<br>Task ID: <code>{}</code>',
+                temporality,
+                result.id
+            )
+        )
+        return redirect('admin:wallets_pipelinecontrol_changelist')
+
+    def run_tracking_view(self, request):
+        """Execute tracking pipeline."""
+        from wallets.tasks import run_tracking_pipeline
+        result = run_tracking_pipeline.delay()
+        messages.success(
+            request,
+            format_html(
+                '✓ <strong>Tracking Pipeline</strong> lancé avec succès!<br>Task ID: <code>{}</code>',
+                result.id
+            )
+        )
+        return redirect('admin:wallets_pipelinecontrol_changelist')
+
+    def run_scoring_view(self, request):
+        """Execute scoring pipeline."""
+        from wallets.tasks import run_scoring_pipeline
+        result = run_scoring_pipeline.delay()
+        messages.success(
+            request,
+            format_html(
+                '✓ <strong>Scoring Pipeline</strong> lancé avec succès!<br>Task ID: <code>{}</code>',
+                result.id
+            )
+        )
+        return redirect('admin:wallets_pipelinecontrol_changelist')
+
+    def run_consensus_view(self, request):
+        """Execute consensus detection."""
+        from wallets.tasks import run_consensus_detection
+        result = run_consensus_detection.delay()
+        messages.success(
+            request,
+            format_html(
+                '✓ <strong>Consensus Detection</strong> lancé avec succès!<br>Task ID: <code>{}</code>',
+                result.id
+            )
+        )
+        return redirect('admin:wallets_pipelinecontrol_changelist')
+
+
+@admin.register(ExplosiveToken)
+class ExplosiveTokenAdmin(admin.ModelAdmin):
+    list_display = ['symbol', 'token_address', 'chain', 'price_change_24h', 'volume_24h', 'fdv', 'detected_at']
+    list_filter = ['chain', 'traite', 'detected_at']
+    search_fields = ['symbol', 'token_address']
+    date_hierarchy = 'detected_at'
+    readonly_fields = ['detected_at']
+
+
+@admin.register(TokenPriceHistory)
+class TokenPriceHistoryAdmin(admin.ModelAdmin):
+    list_display = ['token_address', 'chain', 'date', 'close', 'volume']
+    list_filter = ['chain', 'date']
+    search_fields = ['token_address']
+    date_hierarchy = 'date'

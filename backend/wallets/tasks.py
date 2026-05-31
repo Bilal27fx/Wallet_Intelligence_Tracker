@@ -2,6 +2,12 @@
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from wallets.services import (
+    GeckoTerminalService,
+    PriceHistoryService,
+    DuneDiscoveryService,
+    ExplosionDetectorService,
+    ZerionTrackerService,
+    BalanceTrackerService,
     FIFOCalculatorService,
     WalletScorerService,
     TierAnalyzerService,
@@ -90,6 +96,107 @@ def run_consensus_detection(self):
     except Exception as exc:
         logger.error(f"Consensus detection failed: {exc}")
         self.retry(exc=exc, countdown=300)  # Retry after 5min
+
+
+@shared_task(bind=True, max_retries=3)
+def run_discovery_pipeline(self, temporality='14d', timeframe='24h'):
+    """
+    Run complete wallet discovery pipeline.
+    Steps:
+        1. GeckoTerminal token detection
+        2. Price history fetch
+        3. Explosion detection
+        4. Dune wallet discovery
+    Args:
+        temporality: Time period for wallet discovery (14d, 30d, 200d, 360d)
+        timeframe: Time period for token detection (24h, 7d)
+    """
+    try:
+        logger.info("Starting discovery pipeline...")
+
+        # Step 1: GeckoTerminal explosive token detection
+        logger.info("Step 1/4: GeckoTerminal token detection...")
+        gecko_service = GeckoTerminalService()
+        gecko_result = gecko_service.run_detection(timeframe=timeframe)
+        logger.info(f"GeckoTerminal: {gecko_result['total_found']} tokens found, {gecko_result['saved']} saved")
+
+        # Step 2: Price history fetch
+        logger.info("Step 2/4: Fetching price history...")
+        price_service = PriceHistoryService()
+        price_result = price_service.run_price_history_fetch()
+        logger.info(f"Price History: {price_result['total_candles']} candles saved for {price_result['total_tokens']} tokens")
+
+        # Step 3: Explosion detection
+        logger.info("Step 3/4: Detecting explosions...")
+        explosion_service = ExplosionDetectorService()
+        explosion_result = explosion_service.detect_all_explosions()
+        logger.info(f"Explosion: {explosion_result['detected']}/{explosion_result['total']} tokens with explosions")
+
+        # Step 4: Dune wallet discovery
+        logger.info("Step 4/4: Dune wallet discovery...")
+        dune_service = DuneDiscoveryService()
+        dune_result = dune_service.discover_profitable_wallets()
+        logger.info(f"Dune: {dune_result.get('total_wallets', 0)} wallets discovered")
+
+        logger.info("Discovery pipeline completed successfully")
+        return {
+            'status': 'success',
+            'gecko_tokens': gecko_result['total_found'],
+            'price_candles': price_result['total_candles'],
+            'explosions_detected': explosion_result['detected'],
+            'wallets_discovered': dune_result.get('total_wallets', 0)
+        }
+
+    except Exception as exc:
+        logger.error(f"Discovery pipeline failed: {exc}")
+        self.retry(exc=exc, countdown=300)
+
+
+@shared_task(bind=True, max_retries=3)
+def run_tracking_pipeline(self):
+    """
+    Run wallet tracking pipeline (sync all active wallets + detect changes).
+    """
+    try:
+        from wallets.models import Wallet
+
+        logger.info("Starting tracking pipeline...")
+
+        # Get all active wallets
+        wallets = Wallet.objects.all()
+        logger.info(f"Tracking {wallets.count()} wallets...")
+
+        synced_count = 0
+        changes_count = 0
+
+        # Sync each wallet
+        zerion_service = ZerionTrackerService()
+        balance_service = BalanceTrackerService()
+
+        for wallet in wallets:
+            try:
+                # Sync from Zerion
+                zerion_service.full_sync(wallet.address)
+                synced_count += 1
+
+                # Detect position changes
+                changes = balance_service.detect_position_changes(wallet.address)
+                changes_count += len(changes)
+
+            except Exception as e:
+                logger.error(f"Failed to track wallet {wallet.address}: {e}")
+                continue
+
+        logger.info(f"Tracking pipeline completed: {synced_count} wallets synced, {changes_count} changes detected")
+        return {
+            'status': 'success',
+            'wallets_synced': synced_count,
+            'changes_detected': changes_count
+        }
+
+    except Exception as exc:
+        logger.error(f"Tracking pipeline failed: {exc}")
+        self.retry(exc=exc, countdown=300)
 
 
 @shared_task

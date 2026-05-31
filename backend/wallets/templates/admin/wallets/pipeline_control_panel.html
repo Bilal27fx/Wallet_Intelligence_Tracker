@@ -1,0 +1,274 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}Pipeline Control Panel{% endblock %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+    .control-panel {
+        padding: 20px;
+        max-width: 1400px;
+    }
+
+    .pipeline-buttons {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        margin-bottom: 40px;
+    }
+
+    .pipeline-button {
+        display: block;
+        padding: 24px 20px;
+        background: #fff;
+        color: #1a1a1a;
+        text-decoration: none;
+        border-radius: 6px;
+        border: 1px solid #e0e0e0;
+        transition: all 0.2s ease;
+        text-align: left;
+        cursor: pointer;
+        position: relative;
+    }
+
+    .pipeline-button:hover {
+        border-color: #333;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        color: #000;
+    }
+
+    .pipeline-button.discovery:hover {
+        border-color: #2196F3;
+    }
+
+    .pipeline-button.tracking:hover {
+        border-color: #4CAF50;
+    }
+
+    .pipeline-button.scoring:hover {
+        border-color: #9C27B0;
+    }
+
+    .pipeline-button.consensus:hover {
+        border-color: #FF5722;
+    }
+
+    .pipeline-button-icon {
+        font-size: 28px;
+        margin-bottom: 12px;
+        display: block;
+        opacity: 0.8;
+    }
+
+    .pipeline-button-title {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 6px;
+        display: block;
+        color: #1a1a1a;
+    }
+
+    .pipeline-button-desc {
+        font-size: 13px;
+        color: #666;
+        display: block;
+        line-height: 1.4;
+    }
+
+    .info-section {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .info-section h2 {
+        margin-top: 0;
+        color: #333;
+        border-bottom: 2px solid #667eea;
+        padding-bottom: 10px;
+    }
+
+    .task-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .task-table th {
+        background: #f5f5f5;
+        padding: 12px;
+        text-align: left;
+        border-bottom: 2px solid #ddd;
+        font-weight: 600;
+    }
+
+    .task-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid #eee;
+    }
+
+    .task-table tr:hover {
+        background: #f9f9f9;
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .status-success {
+        background: #d4edda;
+        color: #155724;
+    }
+
+    .status-failure {
+        background: #f8d7da;
+        color: #721c24;
+    }
+
+    .status-pending {
+        background: #fff3cd;
+        color: #856404;
+    }
+
+    .status-started {
+        background: #d1ecf1;
+        color: #0c5460;
+    }
+
+    .enabled-badge {
+        background: #28a745;
+        color: white;
+        padding: 3px 8px;
+        border-radius: 3px;
+        font-size: 11px;
+    }
+
+    .disabled-badge {
+        background: #6c757d;
+        color: white;
+        padding: 3px 8px;
+        border-radius: 3px;
+        font-size: 11px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="control-panel">
+    <h1>🎛️ Pipeline Control Panel</h1>
+
+    <div class="pipeline-buttons">
+        <a href="{% url 'admin:run_discovery_pipeline' %}?temporality=14d" class="pipeline-button discovery" onclick="return confirm('Lancer le Discovery Pipeline (14d) ?');">
+            <span class="pipeline-button-icon">🔎</span>
+            <span class="pipeline-button-title">Discovery Pipeline</span>
+            <span class="pipeline-button-desc">Dune + Explosion Detection (14d)</span>
+        </a>
+
+        <a href="{% url 'admin:run_tracking_pipeline' %}" class="pipeline-button tracking" onclick="return confirm('Lancer le Tracking Pipeline (tous les wallets) ?');">
+            <span class="pipeline-button-icon">📊</span>
+            <span class="pipeline-button-title">Tracking Pipeline</span>
+            <span class="pipeline-button-desc">Sync All Wallets + Detect Changes</span>
+        </a>
+
+        <a href="{% url 'admin:run_scoring_pipeline' %}" class="pipeline-button scoring" onclick="return confirm('Lancer le Scoring Pipeline (FIFO + Score + Tiers) ?');">
+            <span class="pipeline-button-icon">🚀</span>
+            <span class="pipeline-button-title">Scoring Pipeline</span>
+            <span class="pipeline-button-desc">FIFO + Score + Tiers Analysis</span>
+        </a>
+
+        <a href="{% url 'admin:run_consensus_detection' %}" class="pipeline-button consensus" onclick="return confirm('Lancer la Consensus Detection ?');">
+            <span class="pipeline-button-icon">🔍</span>
+            <span class="pipeline-button-title">Consensus Detection</span>
+            <span class="pipeline-button-desc">Smart Wallets Signal Detection</span>
+        </a>
+    </div>
+
+    <div class="info-section">
+        <h2>📅 Scheduled Tasks</h2>
+        {% if scheduled_tasks %}
+        <table class="task-table">
+            <thead>
+                <tr>
+                    <th>Task Name</th>
+                    <th>Schedule</th>
+                    <th>Status</th>
+                    <th>Last Run</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in scheduled_tasks %}
+                <tr>
+                    <td><strong>{{ task.name }}</strong></td>
+                    <td>{{ task.crontab|default:task.interval|default:"—" }}</td>
+                    <td>
+                        {% if task.enabled %}
+                        <span class="enabled-badge">ENABLED</span>
+                        {% else %}
+                        <span class="disabled-badge">DISABLED</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ task.last_run_at|default:"Never"|date:"Y-m-d H:i:s" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>No scheduled tasks configured.</p>
+        {% endif %}
+    </div>
+
+    <div class="info-section">
+        <h2>📊 Recent Task Executions</h2>
+        {% if recent_tasks %}
+        <table class="task-table">
+            <thead>
+                <tr>
+                    <th>Task ID</th>
+                    <th>Task Name</th>
+                    <th>Status</th>
+                    <th>Started</th>
+                    <th>Duration</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in recent_tasks %}
+                <tr>
+                    <td><code>{{ task.task_id|truncatechars:16 }}</code></td>
+                    <td>{{ task.task_name|default:"—" }}</td>
+                    <td>
+                        {% if task.status == "SUCCESS" %}
+                        <span class="status-badge status-success">✓ SUCCESS</span>
+                        {% elif task.status == "FAILURE" %}
+                        <span class="status-badge status-failure">✗ FAILURE</span>
+                        {% elif task.status == "PENDING" %}
+                        <span class="status-badge status-pending">⏳ PENDING</span>
+                        {% elif task.status == "STARTED" %}
+                        <span class="status-badge status-started">▶ STARTED</span>
+                        {% else %}
+                        <span class="status-badge">{{ task.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ task.date_created|date:"Y-m-d H:i:s" }}</td>
+                    <td>
+                        {% if task.date_done %}
+                        {{ task.date_done|timesince:task.date_created }}
+                        {% else %}
+                        —
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>No task executions yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
