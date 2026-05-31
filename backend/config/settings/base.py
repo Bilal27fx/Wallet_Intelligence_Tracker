@@ -21,6 +21,7 @@ INSTALLED_APPS = [
 
     # Third-party
     'rest_framework',
+    'drf_spectacular',
 
     # WIT apps
     'wallets',
@@ -94,6 +95,19 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_FILTER_BACKENDS': [
+        'rest_framework.filters.SearchFilter',
+        'rest_framework.filters.OrderingFilter',
+    ],
+}
+
+# API Documentation
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'WIT V1 API',
+    'DESCRIPTION': 'Smart Wallet Intelligence & Trading Analytics API',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
 }
 
 # WIT Configuration (migré de config.py)
