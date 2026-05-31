@@ -72,7 +72,7 @@ GECKO_TOP_PERFORMERS = {
     "MAX_POOLS_PER_NETWORK_MULTI": 30,
     "OUTPUT_DIR": ROOT_DIR / "data" / "raw" / "json",
     "MIN_MARKET_CAP": 300_000,
-    "MAX_POOL_AGE_DAYS": 30,
+    "MAX_POOL_AGE_DAYS": 365,
     "OHLCV_LIMIT": 200,
     "OHLCV_AGGREGATE": 4,
     "OHLCV_AGE_THRESHOLD_HOURS": 168,
@@ -172,8 +172,8 @@ SCORE_ENGINE = {
 
 WALLET_TRACKER = {
     "MIN_TOKEN_VOLUME_USD": 500,
-    "MAX_TRANSACTIONS": 10000,
-    "MAX_PORTFOLIO_TOKENS": 450,
+    "MAX_TRANSACTIONS": 15000,
+    "MAX_PORTFOLIO_TOKENS": 600,
     "TRASH_NAMES": ("test", "airdrop", "scam", "spam", "fake", "shit"),
     "TRASH_SYMBOLS": ("test", "fake", "scam", "spam", "lplz"),
     "RATE_LIMIT_SLEEP_SECONDS": 5,
