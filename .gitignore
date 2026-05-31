@@ -4,10 +4,31 @@ whale_tracket_tg_bot_V1/.env
 
 # Python cache
 __pycache__/
+*/__pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
+*$py.class
 .Python
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
 venv/
@@ -20,8 +41,7 @@ ENV/
 *.swp
 *.swo
 
-# Logs
-*.log
+# Logs (voir aussi section Django)
 
 # OS files
 .DS_Store
