@@ -5,6 +5,7 @@ psycopg2-binary==2.9.9
 celery==5.3.4
 redis==5.0.1
 django-celery-beat==2.6.0
+django-celery-results==2.5.1
 python-dotenv==1.0.0
 requests==2.31.0
 pandas==2.1.4

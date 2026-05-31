@@ -1,10 +1,48 @@
 """Wallets admin."""
 from django.contrib import admin
+from django.contrib import messages
 from .models import (
     Wallet, Token, Transaction, WalletPositionChange,
     WalletBrute, TokenAnalytics, WalletTierPerformance,
     WalletQualified, SmartWallet, ConsensusSignal
 )
+
+
+# Admin actions to trigger pipelines
+def run_scoring_pipeline_action(modeladmin, request, queryset):
+    """Admin action to trigger scoring pipeline."""
+    from wallets.tasks import run_scoring_pipeline
+    result = run_scoring_pipeline.delay()
+    messages.success(
+        request,
+        f'✓ Scoring pipeline started! Task ID: {result.id}'
+    )
+run_scoring_pipeline_action.short_description = "🚀 Run Scoring Pipeline (FIFO + Score + Tiers)"
+
+
+def run_consensus_detection_action(modeladmin, request, queryset):
+    """Admin action to trigger consensus detection."""
+    from wallets.tasks import run_consensus_detection
+    result = run_consensus_detection.delay()
+    messages.success(
+        request,
+        f'✓ Consensus detection started! Task ID: {result.id}'
+    )
+run_consensus_detection_action.short_description = "🔍 Run Consensus Detection"
+
+
+def sync_wallet_action(modeladmin, request, queryset):
+    """Admin action to sync selected wallets from Zerion."""
+    from wallets.tasks import sync_wallet_data
+    count = 0
+    for wallet in queryset:
+        result = sync_wallet_data.delay(wallet.address)
+        count += 1
+    messages.success(
+        request,
+        f'✓ Syncing {count} wallet(s) from Zerion...'
+    )
+sync_wallet_action.short_description = "🔄 Sync selected wallets from Zerion"
 
 
 @admin.register(Wallet)
@@ -13,6 +51,11 @@ class WalletAdmin(admin.ModelAdmin):
     list_filter = ['period', 'is_smart_wallet']
     search_fields = ['address']
     readonly_fields = ['created_at', 'updated_at']
+    actions = [
+        run_scoring_pipeline_action,
+        run_consensus_detection_action,
+        sync_wallet_action,
+    ]
 
 
 @admin.register(Token)
