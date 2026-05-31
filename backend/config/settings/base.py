@@ -22,6 +22,7 @@ INSTALLED_APPS = [
     # Third-party
     'rest_framework',
     'drf_spectacular',
+    'django_celery_beat',
 
     # WIT apps
     'wallets',
@@ -122,3 +123,13 @@ SCORE_ENGINE_ACTIVITY_WEIGHT = 0.1
 CONSENSUS_MIN_WHALES = 2
 CONSENSUS_MCAP_MIN = 100_000
 CONSENSUS_MCAP_MAX = 100_000_000
+
+# Celery Configuration
+CELERY_BROKER_URL = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'Europe/Paris'
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60
