@@ -54,6 +54,22 @@
         border-color: #FF5722;
     }
 
+    .pipeline-button.wallet-initializer:hover {
+        border-color: #FFC107;
+    }
+
+    .pipeline-button.all {
+        grid-column: 1 / -1;
+        background: #f8f9fa;
+        border: 2px solid #333;
+    }
+
+    .pipeline-button.all:hover {
+        background: #fff;
+        border-color: #000;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
     .pipeline-button-icon {
         font-size: 28px;
         margin-bottom: 12px;
@@ -164,16 +180,28 @@
     <h1>🎛️ Pipeline Control Panel</h1>
 
     <div class="pipeline-buttons">
+        <a href="{% url 'admin:run_all_pipelines' %}?temporality=14d" class="pipeline-button all" onclick="return confirm('⚠️ Lancer TOUS les pipelines en séquence ?');">
+            <span class="pipeline-button-icon">⚡</span>
+            <span class="pipeline-button-title">Lancer tous les pipelines</span>
+            <span class="pipeline-button-desc">Discovery → Wallet Initializer → Scoring → Consensus (séquence complète)</span>
+        </a>
+
         <a href="{% url 'admin:run_discovery_pipeline' %}?temporality=14d" class="pipeline-button discovery" onclick="return confirm('Lancer le Discovery Pipeline (14d) ?');">
             <span class="pipeline-button-icon">🔎</span>
             <span class="pipeline-button-title">Discovery Pipeline</span>
-            <span class="pipeline-button-desc">Dune + Explosion Detection (14d)</span>
+            <span class="pipeline-button-desc">GeckoTerminal + Price + Explosion + Dune (14d)</span>
+        </a>
+
+        <a href="{% url 'admin:run_wallet_initializer' %}" class="pipeline-button wallet-initializer" onclick="return confirm('Initialiser les wallets depuis wallet_brute ?');">
+            <span class="pipeline-button-icon">🔧</span>
+            <span class="pipeline-button-title">Wallet Initializer</span>
+            <span class="pipeline-button-desc">Initialise les wallets découverts (wallet_brute → wallets)</span>
         </a>
 
         <a href="{% url 'admin:run_tracking_pipeline' %}" class="pipeline-button tracking" onclick="return confirm('Lancer le Tracking Pipeline (tous les wallets) ?');">
             <span class="pipeline-button-icon">📊</span>
             <span class="pipeline-button-title">Tracking Pipeline</span>
-            <span class="pipeline-button-desc">Sync All Wallets + Detect Changes</span>
+            <span class="pipeline-button-desc">Sync All Wallets + Detect Changes (Zerion Live)</span>
         </a>
 
         <a href="{% url 'admin:run_scoring_pipeline' %}" class="pipeline-button scoring" onclick="return confirm('Lancer le Scoring Pipeline (FIFO + Score + Tiers) ?');">

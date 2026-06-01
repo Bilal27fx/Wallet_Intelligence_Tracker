@@ -21,7 +21,16 @@ class BalanceTrackerService:
         changes = []
 
         for token in current_tokens:
-            change_type = self._determine_change_type(token)
+            # Get previous state from WalletPositionChange (last recorded state)
+            last_change = WalletPositionChange.objects.filter(
+                wallet=wallet,
+                fungible_id=token.fungible_id
+            ).order_by('-detected_at').first()
+
+            old_amount = last_change.new_amount if last_change else 0
+            new_amount = token.amount
+
+            change_type = self._determine_change_type_from_amounts(old_amount, new_amount)
 
             if change_type:
                 change_data = {
@@ -31,25 +40,19 @@ class BalanceTrackerService:
                     'fungible_id': token.fungible_id,
                     'contract_address': token.contract_address,
                     'change_type': change_type,
-                    'old_amount': token.previous_amount or 0,
-                    'new_amount': token.current_amount,
-                    'usd_change': self._calculate_usd_change(token),
+                    'old_amount': old_amount,
+                    'new_amount': new_amount,
+                    'usd_change': token.usd_value - (last_change.new_amount * (token.usd_value / new_amount) if new_amount > 0 and last_change else 0),
                     'detected_at': datetime.now()
                 }
 
                 WalletPositionChange.objects.create(**change_data)
                 changes.append(change_data)
 
-                token.previous_amount = token.current_amount
-                token.save(update_fields=['previous_amount'])
-
         return changes
 
-    def _determine_change_type(self, token: Token) -> str:
-        """Determine the type of position change."""
-        old_amount = token.previous_amount or 0
-        new_amount = token.current_amount
-
+    def _determine_change_type_from_amounts(self, old_amount: float, new_amount: float) -> str:
+        """Determine the type of position change from amounts."""
         if old_amount == 0 and new_amount > 0:
             return 'NEW'
         elif old_amount > 0 and new_amount == 0:
@@ -60,19 +63,6 @@ class BalanceTrackerService:
             return 'REDUCTION'
 
         return None
-
-    def _calculate_usd_change(self, token: Token) -> float:
-        """Calculate USD value change."""
-        old_amount = token.previous_amount or 0
-        new_amount = token.current_amount
-
-        if old_amount == 0:
-            return token.current_usd_value
-
-        old_value = token.previous_usd_value or 0
-        new_value = token.current_usd_value
-
-        return new_value - old_value
 
     def get_recent_changes(
         self,

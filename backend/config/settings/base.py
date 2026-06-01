@@ -153,3 +153,39 @@ GECKO_OHLCV_AGGREGATE = 4  # 4H candles
 GECKO_OHLCV_LIMIT = 200
 GECKO_MIN_HOURS_BEFORE_EXPLOSION = 12
 GECKO_MIN_EXPLOSION_PCT = 200
+
+# Dune Analytics Configuration
+DUNE_API_KEY = os.getenv('DUNE_API_KEY', '')
+DUNE_QUERY_IDS = {
+    'ethereum': 5882646,
+    'bnb': 7558389,
+    'base': 7558383,
+}
+DUNE_MIN_HOLDERS = 10
+DUNE_MIN_WALLET_VALUE = 1000
+
+# Wallet Initializer Configuration (Filtering criteria)
+WALLET_FILTER = {
+    'MIN_TOKEN_VALUE_USD': 500,
+    'MIN_WALLET_VALUE_USD': 50000,
+    'MAX_WALLET_VALUE_USD': 50000000,
+    'MIN_TOKENS_PER_WALLET': 2,
+    'MAX_TOKENS_PER_WALLET': 60,
+    'EXCLUDED_TOKENS': (
+        # Stablecoins
+        'USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'TUSD', 'USDP', 'GUSD', 'LUSD', 'MIM', 'USTC', 'UST',
+        'USDD', 'USDN', 'HUSD', 'SUSD', 'CUSD', 'DUSD', 'OUSD', 'MUSD', 'ZUSD', 'RUSD', 'VUSD',
+        'USDX', 'USDK', 'EURS', 'EURT', 'CADC', 'XSGD', 'IDRT', 'TRYB', 'NZDS', 'BIDR',
+        # ETH variants
+        'ETH', 'WETH', 'ETHEREUM', 'STETH', 'WSTETH', 'RETH', 'CBETH', 'FRXETH', 'SFRXETH',
+        'ANKRETH', 'SETH2', 'ALETH', 'AETHC', 'QETH', 'EETH', 'WEETH', 'OETH', 'WOETH',
+        'METH', 'SWETH', 'XETH', 'LSETH', 'UNIETH', 'PXETH', 'APXETH', 'YETH', 'EZETH',
+        'RSETH', 'UNIAETH', 'ETHX', 'SAETH', 'TETH', 'VETH', 'DETH', 'HETH', 'PTETH',
+        # BTC variants
+        'BTC', 'WBTC', 'BITCOIN', 'RENBTC', 'SBTC', 'HBTC', 'OBTC', 'TBTC', 'WIBBTC',
+        'PBTC', 'XBTC', 'BBTC', 'FBTC', 'LBTC', 'CBTC', 'VBTC', 'RBTC', 'KBTC', 'ABTC',
+        'BTCB', 'MBTC', 'UBTC', 'DBTC', 'NBTC', 'GBTC', 'YBTC', 'ZBTC',
+        # BNB variants
+        'BNB', 'BNBCHAIN', 'WBNB', 'BBNB', 'SBNB', 'VBNB',
+    ),
+}

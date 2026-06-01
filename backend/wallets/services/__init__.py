@@ -3,7 +3,8 @@ from .discovery import (
     DuneDiscoveryService,
     ExplosionDetectorService,
     GeckoTerminalService,
-    PriceHistoryService
+    PriceHistoryService,
+    WalletInitializerService
 )
 from .tracking import ZerionTrackerService, BalanceTrackerService
 from .analytics import FIFOCalculatorService, WalletScorerService, TierAnalyzerService
@@ -14,6 +15,7 @@ __all__ = [
     'ExplosionDetectorService',
     'GeckoTerminalService',
     'PriceHistoryService',
+    'WalletInitializerService',
     'ZerionTrackerService',
     'BalanceTrackerService',
     'FIFOCalculatorService',

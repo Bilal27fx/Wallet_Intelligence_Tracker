@@ -74,10 +74,7 @@ class FIFOCalculatorService:
                         total_realized += proceeds - cost_basis
 
                         if buy_entry['date'] and tx.date:
-                            holding_days += (
-                                datetime.fromisoformat(tx.date.replace('Z', '+00:00')) -
-                                datetime.fromisoformat(buy_entry['date'].replace('Z', '+00:00'))
-                            ).days
+                            holding_days += (tx.date - buy_entry['date']).days
 
                         sell_quantity -= buy_entry['quantity']
                         buy_queue.pop(0)
@@ -89,10 +86,7 @@ class FIFOCalculatorService:
                         total_realized += proceeds - cost_basis
 
                         if buy_entry['date'] and tx.date:
-                            holding_days += (
-                                datetime.fromisoformat(tx.date.replace('Z', '+00:00')) -
-                                datetime.fromisoformat(buy_entry['date'].replace('Z', '+00:00'))
-                            ).days
+                            holding_days += (tx.date - buy_entry['date']).days
 
                         buy_entry['quantity'] -= sell_quantity
                         buy_entry['total_cost'] -= cost_basis
@@ -111,7 +105,6 @@ class FIFOCalculatorService:
             'token_symbol': symbol,
             'total_invested': total_invested,
             'total_realized': total_realized,
-            'unrealized_value': unrealized_value,
             'roi_percentage': roi_percentage,
             'is_winning': is_winning,
             'status': 'GAGNANT' if is_winning else 'PERDANT',

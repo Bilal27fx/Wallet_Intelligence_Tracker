@@ -45,6 +45,13 @@ class BaseAPIClient:
 
             except requests.exceptions.RequestException as e:
                 if attempt == retry - 1:
+                    # Log response body for debugging
+                    if hasattr(e, 'response') and e.response is not None:
+                        try:
+                            error_body = e.response.json()
+                            raise Exception(f"{str(e)} - Response: {error_body}")
+                        except:
+                            raise Exception(f"{str(e)} - Response text: {e.response.text}")
                     raise
                 time.sleep(2 ** attempt)
 

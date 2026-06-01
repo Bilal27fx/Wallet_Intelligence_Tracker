@@ -1,11 +1,14 @@
 """Celery tasks for WIT pipelines."""
 from celery import shared_task
 from celery.utils.log import get_task_logger
+from django.db import models
+from wallets.models import Token
 from wallets.services import (
     GeckoTerminalService,
     PriceHistoryService,
     DuneDiscoveryService,
     ExplosionDetectorService,
+    WalletInitializerService,
     ZerionTrackerService,
     BalanceTrackerService,
     FIFOCalculatorService,
@@ -107,6 +110,7 @@ def run_discovery_pipeline(self, temporality='14d', timeframe='24h'):
         2. Price history fetch
         3. Explosion detection
         4. Dune wallet discovery
+        5. Wallet initialization (NEW wallets)
     Args:
         temporality: Time period for wallet discovery (14d, 30d, 200d, 360d)
         timeframe: Time period for token detection (24h, 7d)
@@ -115,28 +119,34 @@ def run_discovery_pipeline(self, temporality='14d', timeframe='24h'):
         logger.info("Starting discovery pipeline...")
 
         # Step 1: GeckoTerminal explosive token detection
-        logger.info("Step 1/4: GeckoTerminal token detection...")
+        logger.info("Step 1/5: GeckoTerminal token detection...")
         gecko_service = GeckoTerminalService()
         gecko_result = gecko_service.run_detection(timeframe=timeframe)
         logger.info(f"GeckoTerminal: {gecko_result['total_found']} tokens found, {gecko_result['saved']} saved")
 
         # Step 2: Price history fetch
-        logger.info("Step 2/4: Fetching price history...")
+        logger.info("Step 2/5: Fetching price history...")
         price_service = PriceHistoryService()
         price_result = price_service.run_price_history_fetch()
         logger.info(f"Price History: {price_result['total_candles']} candles saved for {price_result['total_tokens']} tokens")
 
         # Step 3: Explosion detection
-        logger.info("Step 3/4: Detecting explosions...")
+        logger.info("Step 3/5: Detecting explosions...")
         explosion_service = ExplosionDetectorService()
         explosion_result = explosion_service.detect_all_explosions()
         logger.info(f"Explosion: {explosion_result['detected']}/{explosion_result['total']} tokens with explosions")
 
         # Step 4: Dune wallet discovery
-        logger.info("Step 4/4: Dune wallet discovery...")
+        logger.info("Step 4/5: Dune wallet discovery...")
         dune_service = DuneDiscoveryService()
-        dune_result = dune_service.discover_profitable_wallets()
-        logger.info(f"Dune: {dune_result.get('total_wallets', 0)} wallets discovered")
+        dune_result = dune_service.discover_all_wallets()
+        logger.info(f"Dune: {dune_result.get('total_wallets', 0)} wallets discovered from {dune_result.get('total_tokens', 0)} tokens")
+
+        # Step 5: Initialize discovered wallets (CRITICAL STEP)
+        logger.info("Step 5/5: Initializing discovered wallets...")
+        initializer_service = WalletInitializerService()
+        init_result = initializer_service.initialize_discovered_wallets()
+        logger.info(f"Wallet Init: {init_result['initialized']} wallets initialized, wallet_brute cleared ({init_result['wallet_brute_cleared']} entries)")
 
         logger.info("Discovery pipeline completed successfully")
         return {
@@ -144,7 +154,8 @@ def run_discovery_pipeline(self, temporality='14d', timeframe='24h'):
             'gecko_tokens': gecko_result['total_found'],
             'price_candles': price_result['total_candles'],
             'explosions_detected': explosion_result['detected'],
-            'wallets_discovered': dune_result.get('total_wallets', 0)
+            'wallets_discovered': dune_result.get('total_wallets', 0),
+            'wallets_initialized': init_result['initialized']
         }
 
     except Exception as exc:
@@ -173,15 +184,44 @@ def run_tracking_pipeline(self):
         zerion_service = ZerionTrackerService()
         balance_service = BalanceTrackerService()
 
-        for wallet in wallets:
+        for i, wallet in enumerate(wallets, 1):
             try:
+                logger.info(f"[{i}/{wallets.count()}] {wallet.address[:12]}...")
+
                 # Sync from Zerion
                 zerion_service.full_sync(wallet.address)
+
+                # Check if wallet has tokens
+                tokens = Token.objects.filter(wallet=wallet, in_portfolio=True)
+                if not tokens.exists():
+                    logger.warning(f"  Aucun token détecté pour {wallet.address[:12]}...")
+                    continue
+
                 synced_count += 1
 
                 # Detect position changes
                 changes = balance_service.detect_position_changes(wallet.address)
                 changes_count += len(changes)
+
+                # Group changes by type
+                new_tokens = [c for c in changes if c['change_type'] == 'NEW']
+                accumulations = [c for c in changes if c['change_type'] == 'ACCUMULATION']
+                reductions = [c for c in changes if c['change_type'] == 'REDUCTION']
+                exits = [c for c in changes if c['change_type'] == 'EXIT']
+
+                # Log changes details
+                if changes:
+                    logger.info(f"  {len(changes)} changements: "
+                              f"+{len(new_tokens)} new "
+                              f"↗{len(accumulations)} accum "
+                              f"↘{len(reductions)} red "
+                              f"🚪{len(exits)} exits")
+                else:
+                    logger.info(f"  Aucun changement pour {wallet.address[:12]}...")
+
+                # Log portfolio value
+                total_value = tokens.aggregate(total=models.Sum('usd_value'))['total'] or 0
+                logger.info(f"  ${total_value:,.0f} | {tokens.count()} tokens")
 
             except Exception as e:
                 logger.error(f"Failed to track wallet {wallet.address}: {e}")
@@ -251,3 +291,38 @@ def detect_position_changes(wallet_address: str):
     except Exception as exc:
         logger.error(f"Failed to detect position changes for {wallet_address}: {exc}")
         raise
+
+
+@shared_task(bind=True, max_retries=3)
+def run_wallet_initialization(self, previous_result=None):
+    """Initialize all wallets from wallet_brute table with filtering."""
+    try:
+        logger.info("Starting wallet initialization with filtering...")
+
+        initializer = WalletInitializerService()
+        result = initializer.initialize_discovered_wallets()
+
+        logger.info(
+            f"Wallet initialization completed: "
+            f"{result['initialized']} initialized, "
+            f"{result['skipped']} skipped, "
+            f"{result['failed']} failed, "
+            f"wallet_brute cleared ({result['wallet_brute_cleared']} entries)"
+        )
+
+        if result.get('skip_reasons'):
+            logger.info("Top skip reasons:")
+            for reason, count in sorted(result['skip_reasons'].items(), key=lambda x: x[1], reverse=True)[:5]:
+                logger.info(f"  {reason}: {count}")
+
+        return {
+            'status': 'success',
+            'initialized': result['initialized'],
+            'skipped': result['skipped'],
+            'failed': result['failed'],
+            'wallet_brute_cleared': result['wallet_brute_cleared']
+        }
+
+    except Exception as exc:
+        logger.error(f"Wallet initialization failed: {exc}")
+        self.retry(exc=exc, countdown=300)

@@ -170,12 +170,42 @@ class PipelineControlAdmin(admin.ModelAdmin):
         """Add custom URLs for pipeline execution."""
         urls = super().get_urls()
         custom_urls = [
+            path('run_all/', self.admin_site.admin_view(self.run_all_pipelines_view), name='run_all_pipelines'),
             path('run_discovery/', self.admin_site.admin_view(self.run_discovery_view), name='run_discovery_pipeline'),
+            path('run_wallet_initializer/', self.admin_site.admin_view(self.run_wallet_initializer_view), name='run_wallet_initializer'),
             path('run_tracking/', self.admin_site.admin_view(self.run_tracking_view), name='run_tracking_pipeline'),
             path('run_scoring/', self.admin_site.admin_view(self.run_scoring_view), name='run_scoring_pipeline'),
             path('run_consensus/', self.admin_site.admin_view(self.run_consensus_view), name='run_consensus_detection'),
         ]
         return custom_urls + urls
+
+    def run_all_pipelines_view(self, request):
+        """Execute all pipelines in sequence."""
+        from celery import chain
+        from wallets.tasks import run_discovery_pipeline, run_wallet_initialization, run_scoring_pipeline, run_consensus_detection
+
+        temporality = request.GET.get('temporality', '14d')
+
+        # Chain pipelines to run in sequence
+        workflow = chain(
+            run_discovery_pipeline.s(temporality=temporality),
+            run_wallet_initialization.s(),
+            run_scoring_pipeline.s(),
+            run_consensus_detection.s()
+        )
+
+        result = workflow.apply_async()
+
+        messages.success(
+            request,
+            format_html(
+                '✓ <strong>Tous les pipelines</strong> lancés en séquence!<br>'
+                'Workflow ID: <code>{}</code><br>'
+                'Ordre: Discovery → Wallet Initializer → Scoring → Consensus',
+                result.id
+            )
+        )
+        return redirect('admin:wallets_pipelinecontrol_changelist')
 
     def run_discovery_view(self, request):
         """Execute discovery pipeline."""
@@ -187,6 +217,21 @@ class PipelineControlAdmin(admin.ModelAdmin):
             format_html(
                 '✓ <strong>Discovery Pipeline</strong> lancé avec succès ({})!<br>Task ID: <code>{}</code>',
                 temporality,
+                result.id
+            )
+        )
+        return redirect('admin:wallets_pipelinecontrol_changelist')
+
+    def run_wallet_initializer_view(self, request):
+        """Execute wallet initializer."""
+        from wallets.tasks import run_wallet_initialization
+        result = run_wallet_initialization.delay()
+        messages.success(
+            request,
+            format_html(
+                '✓ <strong>Wallet Initializer</strong> lancé avec succès!<br>'
+                'Task ID: <code>{}</code><br>'
+                'Initialise les wallets depuis wallet_brute',
                 result.id
             )
         )
