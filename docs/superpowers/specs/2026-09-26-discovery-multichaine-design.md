@@ -68,9 +68,9 @@ Principe : le strict nécessaire, rien de recalculable. Clés primaires `BigAuto
 
 | Modèle | Champs |
 |---|---|
-| `Chain` | `gt_id` (unique), `name`, `chain_id` (null si inconnu), `zerion_id` (null si non supporté), `hypersync_supported`, `is_enabled` (défaut `True`), `updated_at` |
+| `Chain` | `gt_id` (unique), `name`, `evm_id` (chain id EVM, null si inconnu), `zerion_id` (vide si non supporté), `hypersync_supported`, `is_enabled` (défaut `True`), `updated_at` |
 | `DetectionSettings` | `chain` (FK unique, null = ligne globale) + seuils nullables (null = valeur globale) : `min_change_24h_pct`, `min_liquidity_usd`, `min_volume_usd`, `peak_volume_window_hours`, `min_fdv_usd`, `max_fdv_usd`, `max_pool_age_hours`, `min_multiplier`, `min_retention_pct`, `confirmation_hours`, `confirmation_timeout_hours`, `sniper_blocks`, `min_buy_usd`, `max_buyers` (0 = pas de plafond) |
-| `PipelineSettings` | Singleton (une seule ligne) : `trending_pages`, `volume_pages_per_chain`, `max_transfers_per_token`, `max_attempts`, `gecko_requests_per_min`, `hypersync_requests_per_min`, `http_timeout_seconds`, `http_max_retries` |
+| `PipelineSettings` | Singleton (une seule ligne) : `trending_pages`, `volume_pages_per_chain`, `candidate_cooldown_hours`, `max_transfers_per_token`, `max_attempts`, `gecko_requests_per_min`, `hypersync_requests_per_min`, `http_timeout_seconds`, `http_max_retries` |
 | `Token` | `chain`, `address`, `symbol`, `decimals` — unique (`chain`, `address`) |
 | `Pool` | `token`, `address`, `created_block` — unique (`token`, `address`) |
 | `Candidate` | `token`, `status`, `sources` (liste), `metrics` (JSON : hausse 24 h, volume, liquidité, FDV à la détection), `rejection_reason`, `attempts`, `next_check_at`, `created_at`, `updated_at` |
@@ -112,6 +112,7 @@ Créées par une data migration, puis gérées uniquement dans l'admin. Ce sont 
 |---|---|
 | `trending_pages` | 10 |
 | `volume_pages_per_chain` | 3 |
+| `candidate_cooldown_hours` | 72 |
 | `max_transfers_per_token` | 500 000 |
 | `max_attempts` | 3 |
 | `gecko_requests_per_min` | 30 |
@@ -143,7 +144,7 @@ CANDIDATE ──► ANALYZED ──► WAITING_CONFIRMATION ──► CONFIRMED 
 | `WAITING_CONFIRMATION` | Pic trop récent pour mesurer la rétention ; `next_check_at = peak_at + confirmation_hours` |
 | `CONFIRMED` | Garde-fous passés |
 | `BUYERS_EXTRACTED` | Early buyers enregistrés |
-| `REJECTED` | Avec raison : `prefilter`, `no_explosion`, `low_volume`, `low_liquidity`, `rug`, `confirmation_timeout`, `too_many_transfers`, `chain_inactive`, `error:<type>` |
+| `REJECTED` | Avec raison : `no_pool`, `no_explosion`, `low_volume`, `low_liquidity`, `rug`, `confirmation_timeout`, `already_extracted`, `too_many_transfers`, `chain_inactive`, `error:<type>` |
 
 ## Pipeline quotidien (Celery)
 
@@ -157,7 +158,7 @@ Le planning est géré par `django-celery-beat` (planning en base, éditable dan
 4. Zerion `GET /v1/chains` → `zerion_id` par correspondance de `chain_id`.
 5. Upsert de `Chain`. `is_enabled` n'est jamais modifié par la synchro.
 
-URL HyperSync dérivée : `https://{chain_id}.hypersync.xyz`.
+URL HyperSync dérivée : `https://{evm_id}.hypersync.xyz`.
 
 ### 2. `collect_candidates`
 
@@ -165,7 +166,7 @@ URL HyperSync dérivée : `https://{chain_id}.hypersync.xyz`.
 2. Pour chaque chaîne active : `GET /networks/{gt_id}/pools?sort=h24_volume_usd_desc`, `volume_pages_per_chain` pages.
 3. Pools de chaînes inactives ignorés. Dédoublonnage par token (pool le plus liquide retenu pour les métriques).
 4. Pré-filtres (`DetectionSettings` de la chaîne) : hausse 24 h, liquidité, volume 24 h, FDV min/max, âge du pool.
-5. Tri local par hausse 24 h. Upsert `Token`, `Pool`, création du `Candidate` (`sources`, `metrics`) si aucun candidat en cours pour ce token.
+5. Tri local par hausse 24 h. Upsert `Token`, `Pool`, création du `Candidate` (`sources`, `metrics`) si aucun candidat en cours pour ce token et si aucun candidat de ce token n'a été clos depuis moins de `candidate_cooldown_hours`. Un pool qui échoue aux pré-filtres ne devient pas candidat (rien n'est stocké).
 
 Ajout manuel : action admin « Ajouter un token » (chaîne + adresse) → récupère token et pools sur GeckoTerminal, crée un `Candidate` avec `sources = ["manual"]`, sans pré-filtres.
 
@@ -181,7 +182,7 @@ Traite les `CANDIDATE` et les `WAITING_CONFIRMATION` dont `next_check_at` est pa
    - liquidité actuelle ≥ `min_liquidity_usd`, sinon `low_liquidity` ;
    - si `now < peak_at + confirmation_hours` → `WAITING_CONFIRMATION` ;
    - sinon rétention = clôture à `peak_at + confirmation_hours` / pic ; < `min_retention_pct` → `rug`.
-5. Un candidat en attente depuis plus de `confirmation_timeout_hours` → `REJECTED/confirmation_timeout`. Un nouveau pic plus haut est pris en compte naturellement à la réévaluation.
+5. Si le pic détecté n'est pas plus récent que celui de la dernière explosion déjà extraite du token → `REJECTED/already_extracted`. Un candidat en attente depuis plus de `confirmation_timeout_hours` → `REJECTED/confirmation_timeout`. Un nouveau pic plus haut est pris en compte naturellement à la réévaluation.
 6. Conversion dates → blocs (`low_at`, `peak_at`, création des pools) par recherche binaire sur les timestamps de blocs HyperSync, avec cache Redis. Création/mise à jour de `Explosion` → `CONFIRMED`.
 
 ### 4. `extract_early_buyers`
