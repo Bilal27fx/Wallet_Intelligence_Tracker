@@ -137,3 +137,15 @@ def test_ohlcv_returns_ascending_candles():
     assert params["aggregate"] == "4"
     assert params["limit"] == "1000"
     assert params["currency"] == "usd"
+
+
+@respx.mock
+def test_non_evm_addresses_keep_their_case():
+    payload = pool_payload(network_rel=True, network="solana")
+    payload["data"][0]["attributes"]["address"] = "6E3jZLtF4tqBwZm3"
+    payload["data"][0]["relationships"]["base_token"]["data"]["id"] = "solana_PumpAbC"
+    payload["included"][0]["id"] = "solana_PumpAbC"
+    respx.get(f"{BASE_URL}/networks/trending_pools").respond(json=payload)
+    [pool] = client().trending_pools(page=1)
+    assert pool.address == "6E3jZLtF4tqBwZm3"
+    assert pool.token_address == "PumpAbC"

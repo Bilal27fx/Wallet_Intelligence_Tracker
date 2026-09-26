@@ -49,6 +49,11 @@ def _float(value) -> float:
     return float(value) if value not in (None, "") else 0.0
 
 
+def _address(value: str) -> str:
+    """Les adresses EVM (hexadécimales) sont insensibles à la casse ; les autres non (Solana…)."""
+    return value.lower() if value.startswith("0x") else value
+
+
 def _datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
 
@@ -92,7 +97,7 @@ class GeckoTerminalClient:
     def token(self, network: str, address: str) -> GtToken:
         attributes = self._http.get(f"/networks/{network}/tokens/{address}")["data"]["attributes"]
         return GtToken(
-            attributes["address"].lower(),
+            _address(attributes["address"]),
             attributes.get("symbol") or "",
             int(attributes["decimals"]),
         )
@@ -126,8 +131,8 @@ class GeckoTerminalClient:
             pools.append(
                 GtPool(
                     network=pool_network,
-                    address=attributes["address"].lower(),
-                    token_address=base_id[len(pool_network) + 1 :].lower(),
+                    address=_address(attributes["address"]),
+                    token_address=_address(base_id[len(pool_network) + 1 :]),
                     token_symbol=token.get("symbol") or "",
                     token_decimals=int(decimals) if decimals is not None else None,
                     price_change_24h_pct=_float(
