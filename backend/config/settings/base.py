@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "django_celery_beat",
     "apps.core",
 ]
 
@@ -79,6 +80,7 @@ CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {
     "core-heartbeat": {
@@ -102,3 +104,8 @@ LOGGING = {
     },
     "root": {"handlers": ["console"], "level": env("LOG_LEVEL", default="INFO")},
 }
+
+# Clés des services externes (vides si absentes)
+ENVIO_API_TOKEN = env("ENVIO_API_TOKEN", default="")
+ZERION_API_KEY = env("ZERION_API_KEY", default="")
+COINGECKO_API_KEY = env("COINGECKO_API_KEY", default="")
