@@ -119,7 +119,8 @@ class HyperSyncClient:
                 tx.hash: tx.from_.lower() for tx in data.transactions if tx.hash and tx.from_
             }
             for log in data.logs:
-                topics = log.topics or []
+                # HyperSync complète toujours à 4 topics avec None.
+                topics = [topic for topic in (log.topics or []) if topic]
                 tx_from = senders.get(log.transaction_hash)
                 # Les Transfer ERC-721 ont 4 topics et pas de data : on les ignore.
                 if len(topics) != 3 or not log.data or log.data == "0x" or tx_from is None:

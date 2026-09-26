@@ -118,3 +118,21 @@ def test_transfers_raises_when_over_cap():
     )
     with pytest.raises(TooManyTransfers):
         make_client(inner).transfers("0xtoken", 0, 200, max_transfers=1)
+
+
+def test_transfers_accepts_real_topics_padding():
+    # HyperSync renvoie toujours 4 topics, complétés par None.
+    padded = log(100, "0xt1", POOL, ALICE, 7)
+    padded.topics = padded.topics + [None]
+    inner = FakeInner(
+        [
+            page(
+                200,
+                logs=[padded],
+                txs=[SimpleNamespace(hash="0xt1", from_=ALICE)],
+                blocks=[SimpleNamespace(number=100, timestamp=1)],
+            )
+        ]
+    )
+    [transfer] = make_client(inner).transfers("0xtoken", 0, 200, max_transfers=10)
+    assert transfer.amount == 7
