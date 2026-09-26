@@ -12,12 +12,16 @@ dependencies = [
     "redis",
     "gunicorn>=23,<24",
     "whitenoise>=6.9,<7",
+    "httpx>=0.28,<1",
+    "hypersync>=1.2,<2",
+    "django-celery-beat>=2.9,<3",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3,<9",
     "pytest-django>=4.11,<5",
+    "respx>=0.23,<1",
     "ruff>=0.12,<1",
 ]
 
@@ -27,8 +31,9 @@ package = false
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.dev"
 python_files = ["test_*.py"]
-testpaths = ["tests", "apps"]
-addopts = "-ra"
+testpaths = ["tests", "apps", "integrations"]
+addopts = "-ra -m 'not live'"
+markers = ["live: appelle les vraies API externes (lancer avec -m live)"]
 
 [tool.ruff]
 line-length = 100

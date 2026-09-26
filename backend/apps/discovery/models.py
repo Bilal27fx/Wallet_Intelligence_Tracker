@@ -1,0 +1,244 @@
+"""Modèles de la découverte : chaînes, réglages, tokens, candidats, explosions, acheteurs."""
+
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.db.models import Q
+
+THRESHOLD_FIELDS = (
+    "min_change_24h_pct",
+    "min_liquidity_usd",
+    "min_volume_usd",
+    "peak_volume_window_hours",
+    "min_fdv_usd",
+    "max_fdv_usd",
+    "max_pool_age_hours",
+    "min_multiplier",
+    "min_retention_pct",
+    "confirmation_hours",
+    "confirmation_timeout_hours",
+    "sniper_blocks",
+    "min_buy_usd",
+    "max_buyers",
+)
+CLOSED_STATUSES = ("rejected", "buyers_extracted")
+UINT256_DIGITS = 78
+
+
+class ChainQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(is_enabled=True, hypersync_supported=True, evm_id__isnull=False).exclude(
+            zerion_id=""
+        )
+
+
+class Chain(models.Model):
+    gt_id = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=128)
+    evm_id = models.PositiveBigIntegerField(null=True, blank=True)
+    zerion_id = models.CharField(max_length=64, blank=True, default="")
+    hypersync_supported = models.BooleanField(default=False)
+    is_enabled = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = ChainQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["gt_id"]
+
+    def __str__(self):
+        return self.gt_id
+
+    @property
+    def is_active(self) -> bool:
+        return (
+            self.is_enabled
+            and self.hypersync_supported
+            and self.evm_id is not None
+            and self.zerion_id != ""
+        )
+
+
+def _usd():
+    return models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+
+
+class DetectionSettings(models.Model):
+    chain = models.ForeignKey(
+        Chain, null=True, blank=True, on_delete=models.CASCADE, related_name="detection_settings"
+    )
+    min_change_24h_pct = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    min_liquidity_usd = _usd()
+    min_volume_usd = _usd()
+    peak_volume_window_hours = models.PositiveIntegerField(null=True, blank=True)
+    min_fdv_usd = _usd()
+    max_fdv_usd = _usd()
+    max_pool_age_hours = models.PositiveIntegerField(null=True, blank=True)
+    min_multiplier = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    min_retention_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    confirmation_hours = models.PositiveIntegerField(null=True, blank=True)
+    confirmation_timeout_hours = models.PositiveIntegerField(null=True, blank=True)
+    sniper_blocks = models.PositiveIntegerField(null=True, blank=True)
+    min_buy_usd = _usd()
+    max_buyers = models.PositiveIntegerField(
+        null=True, blank=True, help_text="0 = pas de plafond. Vide = valeur globale."
+    )
+
+    class Meta:
+        verbose_name = "réglages de détection"
+        verbose_name_plural = "réglages de détection"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["chain"], name="discovery_one_settings_per_chain", nulls_distinct=False
+            )
+        ]
+
+    def __str__(self):
+        return f"Réglages {self.chain or 'globaux'}"
+
+    def clean(self):
+        if self.chain_id is None:
+            missing = [name for name in THRESHOLD_FIELDS if getattr(self, name) is None]
+            if missing:
+                raise ValidationError(
+                    {name: "Obligatoire pour les réglages globaux." for name in missing}
+                )
+
+
+class PipelineSettings(models.Model):
+    trending_pages = models.PositiveSmallIntegerField(default=10)
+    volume_pages_per_chain = models.PositiveSmallIntegerField(default=3)
+    candidate_cooldown_hours = models.PositiveIntegerField(default=72)
+    max_transfers_per_token = models.PositiveIntegerField(default=500_000)
+    max_attempts = models.PositiveSmallIntegerField(default=3)
+    gecko_requests_per_min = models.PositiveIntegerField(default=30)
+    hypersync_requests_per_min = models.PositiveIntegerField(default=60)
+    http_timeout_seconds = models.PositiveIntegerField(default=15)
+    http_max_retries = models.PositiveSmallIntegerField(default=3)
+
+    class Meta:
+        verbose_name = "réglages du pipeline"
+        verbose_name_plural = "réglages du pipeline"
+
+    def __str__(self):
+        return "Réglages du pipeline"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "PipelineSettings":
+        settings, _ = cls.objects.get_or_create(pk=1)
+        return settings
+
+
+class Token(models.Model):
+    chain = models.ForeignKey(Chain, on_delete=models.CASCADE, related_name="tokens")
+    address = models.CharField(max_length=66)
+    symbol = models.CharField(max_length=64, blank=True)
+    decimals = models.PositiveSmallIntegerField(default=18)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["chain", "address"], name="discovery_unique_token")
+        ]
+
+    def __str__(self):
+        return f"{self.symbol or self.address} ({self.chain})"
+
+
+class Pool(models.Model):
+    token = models.ForeignKey(Token, on_delete=models.CASCADE, related_name="pools")
+    address = models.CharField(max_length=66)
+    created_block = models.PositiveBigIntegerField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["token", "address"], name="discovery_unique_pool")
+        ]
+
+    def __str__(self):
+        return self.address
+
+
+class CandidateQuerySet(models.QuerySet):
+    def open(self):
+        return self.exclude(status__in=CLOSED_STATUSES)
+
+
+class Candidate(models.Model):
+    class Status(models.TextChoices):
+        CANDIDATE = "candidate", "Candidat"
+        ANALYZED = "analyzed", "Analysé"
+        WAITING_CONFIRMATION = "waiting_confirmation", "En attente de confirmation"
+        CONFIRMED = "confirmed", "Confirmé"
+        BUYERS_EXTRACTED = "buyers_extracted", "Acheteurs extraits"
+        REJECTED = "rejected", "Rejeté"
+
+    token = models.ForeignKey(Token, on_delete=models.CASCADE, related_name="candidates")
+    status = models.CharField(max_length=32, choices=Status.choices, default=Status.CANDIDATE)
+    sources = models.JSONField(default=list)
+    metrics = models.JSONField(default=dict)
+    rejection_reason = models.CharField(max_length=64, blank=True, default="")
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_check_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = CandidateQuerySet.as_manager()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "next_check_at"], name="discovery_cand_status_check")
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["token"],
+                condition=~Q(status__in=CLOSED_STATUSES),
+                name="discovery_one_open_candidate",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.token} — {self.get_status_display()}"
+
+
+class Explosion(models.Model):
+    candidate = models.OneToOneField(Candidate, on_delete=models.CASCADE, related_name="explosion")
+    low_block = models.PositiveBigIntegerField()
+    low_at = models.DateTimeField()
+    peak_block = models.PositiveBigIntegerField()
+    peak_at = models.DateTimeField()
+    multiplier = models.DecimalField(max_digits=12, decimal_places=2)
+    retention_pct = models.DecimalField(max_digits=7, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.candidate.token} ×{self.multiplier}"
+
+
+class Wallet(models.Model):
+    address = models.CharField(max_length=42, unique=True)
+
+    def __str__(self):
+        return self.address
+
+
+class EarlyBuyer(models.Model):
+    explosion = models.ForeignKey(Explosion, on_delete=models.CASCADE, related_name="buyers")
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="early_buys")
+    first_buy_block = models.PositiveBigIntegerField()
+    first_buy_at = models.DateTimeField()
+    bought_amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0)
+    bought_usd = models.DecimalField(max_digits=20, decimal_places=2)
+    sold_amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, default=0)
+    is_sniper = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["explosion", "wallet"], name="discovery_one_buyer_per_explosion"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.wallet} → {self.explosion}"
