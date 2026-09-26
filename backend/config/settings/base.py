@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "apps.core",
 ]
 
 MIDDLEWARE = [
@@ -79,7 +80,12 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_BEAT_SCHEDULE: dict = {}
+CELERY_BEAT_SCHEDULE = {
+    "core-heartbeat": {
+        "task": "apps.core.tasks.heartbeat",
+        "schedule": 60.0,
+    },
+}
 
 LOGGING = {
     "version": 1,
