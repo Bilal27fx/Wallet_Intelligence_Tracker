@@ -19,6 +19,7 @@ THRESHOLD_FIELDS = (
     "sniper_blocks",
     "min_buy_usd",
     "max_buyers",
+    "explosion_window_hours",
 )
 CLOSED_STATUSES = ("rejected", "buyers_extracted")
 UINT256_DIGITS = 78
@@ -81,6 +82,11 @@ class DetectionSettings(models.Model):
     min_buy_usd = _usd()
     max_buyers = models.PositiveIntegerField(
         null=True, blank=True, help_text="0 = pas de plafond. Vide = valeur globale."
+    )
+    explosion_window_hours = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Le point bas et le pic doivent se trouver dans ces dernières heures.",
     )
 
     class Meta:

@@ -24,6 +24,7 @@ class Thresholds:
     sniper_blocks: int
     min_buy_usd: float
     max_buyers: int
+    explosion_window_hours: int
 
 
 def thresholds_for(chain: Chain) -> Thresholds:

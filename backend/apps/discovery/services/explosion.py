@@ -55,7 +55,8 @@ def find_best_run(candles: list[Candle]) -> tuple[Candle, Candle, float] | None:
 def detect_explosion(
     candles: list[Candle], *, now_ts: int, current_liquidity_usd: float, thresholds: Thresholds
 ) -> Verdict:
-    run = find_best_run(candles)
+    window_start = now_ts - thresholds.explosion_window_hours * 3600
+    run = find_best_run([c for c in candles if c.ts >= window_start])
     if run is None or run[2] < thresholds.min_multiplier:
         return Verdict(REJECTED, "no_explosion")
     low, peak, multiplier = run

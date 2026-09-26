@@ -8,7 +8,7 @@ from integrations.hypersync import Transfer
 HOUR = 3600
 UNIT = 10**18
 NOW = datetime(2026, 9, 20, 12, tzinfo=UTC)
-POOL_CREATED = NOW - timedelta(hours=100)
+POOL_CREATED = NOW - timedelta(hours=60)
 TOKEN = "0x" + "1" * 40
 POOL = "0x" + "2" * 40
 ALICE = "0x" + "a" * 40

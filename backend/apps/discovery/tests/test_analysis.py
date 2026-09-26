@@ -57,7 +57,7 @@ def test_rejects_when_no_explosion(candidate):
 
 
 def test_waits_when_peak_is_recent(candidate):
-    recent = NOW - timedelta(hours=100) + timedelta(hours=30)
+    recent = POOL_CREATED + timedelta(hours=30)
     assert analyze(candidate, now=recent) == Candidate.Status.WAITING_CONFIRMATION
     candidate.refresh_from_db()
     peak = int(POOL_CREATED.timestamp()) + 20 * HOUR

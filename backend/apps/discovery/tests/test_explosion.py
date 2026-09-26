@@ -29,6 +29,7 @@ T = Thresholds(
     sniper_blocks=3,
     min_buy_usd=500,
     max_buyers=300,
+    explosion_window_hours=1000,
 )
 
 
@@ -130,3 +131,29 @@ def test_threshold_override_changes_verdict():
         thresholds=replace(T, min_multiplier=2),
     )
     assert verdict.status == CONFIRMED
+
+
+def test_old_explosion_outside_window_is_ignored():
+    # Explosion ×10 il y a longtemps, puis prix plat : rien de récent.
+    closes = [1.0, 0.5, 5.0] + [3.0] * 200
+    verdict = detect_explosion(
+        candles(closes),
+        now_ts=203 * HOUR,
+        current_liquidity_usd=50_000,
+        thresholds=replace(T, explosion_window_hours=72),
+    )
+    assert (verdict.status, verdict.reason) == (REJECTED, "no_explosion")
+
+
+def test_recent_explosion_wins_over_bigger_old_one():
+    # Vieille explosion ×20, puis explosion récente ×6 dans les 72 dernières heures.
+    closes = [1.0, 0.25, 5.0] + [1.0] * 100 + [0.5, 3.0] + [2.0] * 30
+    verdict = detect_explosion(
+        candles(closes),
+        now_ts=len(closes) * HOUR,
+        current_liquidity_usd=50_000,
+        thresholds=replace(T, explosion_window_hours=72),
+    )
+    assert verdict.status == CONFIRMED
+    assert verdict.signal.multiplier == 6.0
+    assert verdict.signal.low_ts == 103 * HOUR
