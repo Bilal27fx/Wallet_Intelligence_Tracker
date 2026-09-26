@@ -69,3 +69,24 @@ Chaque app de `backend/apps/<app>/` contient `models.py`, `serializers.py`, `vie
 ## Configuration
 
 Toute la configuration passe par les variables d'environnement, documentées dans [`.env.example`](.env.example). Le fichier `.env` n'est jamais versionné.
+
+## Découverte multi-chaînes
+
+Chaque jour à 06:00 UTC (tâche périodique `discovery-daily`, modifiable dans l'admin), le backend :
+
+1. synchronise les chaînes (GeckoTerminal, CoinGecko, HyperSync, Zerion) ;
+2. collecte les candidats (trending global + top volume par chaîne active) ;
+3. détecte les explosions (×N, volume, liquidité, rétention après le pic) ;
+4. extrait les early buyers EOA significatifs via HyperSync.
+
+Clés à renseigner dans `.env` : `ENVIO_API_TOKEN`, `ZERION_API_KEY` (et `COINGECKO_API_KEY`, optionnelle).
+
+Tous les réglages sont dans l'admin : **Réglages de détection** (globaux + par chaîne), **Réglages du pipeline**, **Chaînes** (interrupteur), **Tâches périodiques**. Un token repéré ailleurs s'ajoute via **Candidats → Ajouter un token**.
+
+Lancer le pipeline à la main :
+
+    make shell
+    >>> from apps.discovery.tasks import run_discovery
+    >>> run_discovery.delay()
+
+Tests contre les vraies API : `make test args="-m live integrations"`.
