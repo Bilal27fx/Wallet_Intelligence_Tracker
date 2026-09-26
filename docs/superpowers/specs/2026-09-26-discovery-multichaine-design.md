@@ -33,7 +33,7 @@ Chaque jour, sans aucune chaîne codée en dur :
 | Explosion | Multiplicateur ×N (point bas → pic) + garde-fous volume, liquidité, rétention après le pic |
 | Acheteur | Le signataire de la transaction (`tx.from`) reçoit les tokens → EOA uniquement, par construction |
 | Taille | `bought_usd ≥ min_buy_usd`, puis au plus `max_buyers` plus gros par explosion ; les miettes ne sont pas stockées |
-| Seuils | En base (`DetectionSettings`), globaux avec surcharge optionnelle par chaîne, modifiables dans l'admin |
+| Paramètres | **Aucun paramètre codé en dur.** Seuils métier dans `DetectionSettings` (globaux + surcharge par chaîne), paramètres du pipeline dans `PipelineSettings` (singleton), planning dans `django-celery-beat`. Tout est modifiable dans l'admin ; le code ne contient que des valeurs par défaut de migration |
 | Évolution | Source de candidats interchangeable (Megafilter CoinGecko ajoutable plus tard) |
 
 ## Structure
@@ -69,7 +69,8 @@ Principe : le strict nécessaire, rien de recalculable. Clés primaires `BigAuto
 | Modèle | Champs |
 |---|---|
 | `Chain` | `gt_id` (unique), `name`, `chain_id` (null si inconnu), `zerion_id` (null si non supporté), `hypersync_supported`, `is_enabled` (défaut `True`), `updated_at` |
-| `DetectionSettings` | `chain` (FK unique, null = ligne globale) + seuils nullables (null = valeur globale) : `min_change_24h_pct`, `min_liquidity_usd`, `min_volume_usd`, `min_fdv_usd`, `max_fdv_usd`, `max_pool_age_hours`, `min_multiplier`, `min_retention_pct`, `confirmation_hours`, `sniper_blocks`, `min_buy_usd`, `max_buyers` |
+| `DetectionSettings` | `chain` (FK unique, null = ligne globale) + seuils nullables (null = valeur globale) : `min_change_24h_pct`, `min_liquidity_usd`, `min_volume_usd`, `peak_volume_window_hours`, `min_fdv_usd`, `max_fdv_usd`, `max_pool_age_hours`, `min_multiplier`, `min_retention_pct`, `confirmation_hours`, `confirmation_timeout_hours`, `sniper_blocks`, `min_buy_usd`, `max_buyers` (null = pas de plafond) |
+| `PipelineSettings` | Singleton (une seule ligne) : `trending_pages`, `volume_pages_per_chain`, `max_transfers_per_token`, `max_attempts`, `gecko_requests_per_min`, `hypersync_requests_per_min`, `http_timeout_seconds`, `http_max_retries` |
 | `Token` | `chain`, `address`, `symbol`, `decimals` — unique (`chain`, `address`) |
 | `Pool` | `token`, `address`, `created_block` — unique (`token`, `address`) |
 | `Candidate` | `token`, `status`, `sources` (liste), `metrics` (JSON : hausse 24 h, volume, liquidité, FDV à la détection), `rejection_reason`, `attempts`, `next_check_at`, `created_at`, `updated_at` |
@@ -81,25 +82,46 @@ Principe : le strict nécessaire, rien de recalculable. Clés primaires `BigAuto
 - `sold_amount` : tokens envoyés par le wallet entre son premier achat et le pic.
 - `Pool.address` accepte les identifiants de pool Uniswap v4 (32 octets).
 
-### Seuils : valeurs initiales de la ligne globale
+### Valeurs initiales
 
-Créées par une data migration, ajustables dans l'admin.
+Créées par une data migration, puis gérées uniquement dans l'admin. Ce sont des points de départ, à calibrer sur des tokens réels.
+
+**`DetectionSettings` (ligne globale)**
 
 | Seuil | Valeur |
 |---|---|
 | `min_change_24h_pct` | 50 |
 | `min_liquidity_usd` | 10 000 |
 | `min_volume_usd` | 50 000 |
+| `peak_volume_window_hours` | 24 |
 | `min_fdv_usd` / `max_fdv_usd` | 100 000 / 100 000 000 |
 | `max_pool_age_hours` | 720 |
 | `min_multiplier` | 5 |
 | `min_retention_pct` | 30 |
 | `confirmation_hours` | 24 |
+| `confirmation_timeout_hours` | 168 |
 | `sniper_blocks` | 3 |
 | `min_buy_usd` | 500 |
 | `max_buyers` | 300 |
 
-Les paramètres techniques (nombre de pages par source, plafond de transferts par token, nombre max de tentatives, durée max en attente) sont dans les settings Django, pas en base.
+`min_buy_usd` et `max_buyers` s'appliquent dans cet ordre : on garde les acheteurs ≥ `min_buy_usd`, puis les `max_buyers` plus gros parmi eux.
+
+**`PipelineSettings`**
+
+| Paramètre | Valeur |
+|---|---|
+| `trending_pages` | 10 |
+| `volume_pages_per_chain` | 3 |
+| `max_transfers_per_token` | 500 000 |
+| `max_attempts` | 3 |
+| `gecko_requests_per_min` | 30 |
+| `hypersync_requests_per_min` | 60 |
+| `http_timeout_seconds` | 15 |
+| `http_max_retries` | 3 |
+
+Restent dans le code uniquement les constantes de protocole (URLs des API, signature de l'event `Transfer`, limite de 1 000 bougies imposée par GeckoTerminal). Les secrets restent dans les variables d'environnement.
+
+Les réglages sont lus au début de chaque tâche : une modification dans l'admin s'applique au passage suivant, sans redémarrage.
 
 ### Index
 
@@ -125,7 +147,7 @@ CANDIDATE ──► ANALYZED ──► WAITING_CONFIRMATION ──► CONFIRMED 
 
 ## Pipeline quotidien (Celery)
 
-`CELERY_BEAT_SCHEDULE` lance chaque jour à 06:00 UTC la chaîne `sync_chains → collect_candidates → analyze_candidates → extract_early_buyers`. Chaque tâche est aussi lançable seule et ne traite que les candidats dans l'état attendu : relancer ne crée pas de doublon.
+Le planning est géré par `django-celery-beat` (planning en base, éditable dans l'admin : heure, fréquence, activation). Une data migration crée la tâche périodique par défaut : chaque jour à 06:00 UTC, la chaîne `sync_chains → collect_candidates → analyze_candidates → extract_early_buyers`. Chaque tâche est aussi lançable seule et ne traite que les candidats dans l'état attendu : relancer ne crée pas de doublon.
 
 ### 1. `sync_chains`
 
@@ -139,8 +161,8 @@ URL HyperSync dérivée : `https://{chain_id}.hypersync.xyz`.
 
 ### 2. `collect_candidates`
 
-1. `GET /networks/trending_pools?duration=24h`, N pages (toutes chaînes).
-2. Pour chaque chaîne active : `GET /networks/{gt_id}/pools?sort=h24_volume_usd_desc`, N pages.
+1. `GET /networks/trending_pools?duration=24h`, `trending_pages` pages (toutes chaînes).
+2. Pour chaque chaîne active : `GET /networks/{gt_id}/pools?sort=h24_volume_usd_desc`, `volume_pages_per_chain` pages.
 3. Pools de chaînes inactives ignorés. Dédoublonnage par token (pool le plus liquide retenu pour les métriques).
 4. Pré-filtres (`DetectionSettings` de la chaîne) : hausse 24 h, liquidité, volume 24 h, FDV min/max, âge du pool.
 5. Tri local par hausse 24 h. Upsert `Token`, `Pool`, création du `Candidate` (`sources`, `metrics`) si aucun candidat en cours pour ce token.
@@ -155,18 +177,18 @@ Traite les `CANDIDATE` et les `WAITING_CONFIRMATION` dont `next_check_at` est pa
 2. OHLCV du pool le plus liquide. Résolution choisie pour couvrir l'âge du pool en ≤ 1 000 bougies (1 h, 4 h ou 1 j).
 3. `detect_explosion(candles, settings)` (pure) : meilleur ratio `pic / plus bas précédent` sur les clôtures, en un seul passage. Sous `min_multiplier` → `REJECTED/no_explosion`.
 4. Garde-fous :
-   - volume cumulé sur 24 h autour du pic ≥ `min_volume_usd`, sinon `low_volume` ;
+   - volume cumulé sur `peak_volume_window_hours` autour du pic ≥ `min_volume_usd`, sinon `low_volume` ;
    - liquidité actuelle ≥ `min_liquidity_usd`, sinon `low_liquidity` ;
    - si `now < peak_at + confirmation_hours` → `WAITING_CONFIRMATION` ;
    - sinon rétention = clôture à `peak_at + confirmation_hours` / pic ; < `min_retention_pct` → `rug`.
-5. Un candidat en attente depuis plus de 7 jours → `REJECTED/confirmation_timeout`. Un nouveau pic plus haut est pris en compte naturellement à la réévaluation.
+5. Un candidat en attente depuis plus de `confirmation_timeout_hours` → `REJECTED/confirmation_timeout`. Un nouveau pic plus haut est pris en compte naturellement à la réévaluation.
 6. Conversion dates → blocs (`low_at`, `peak_at`, création des pools) par recherche binaire sur les timestamps de blocs HyperSync, avec cache Redis. Création/mise à jour de `Explosion` → `CONFIRMED`.
 
 ### 4. `extract_early_buyers`
 
 Une sous-tâche Celery par candidat `CONFIRMED`.
 
-1. HyperSync : logs `Transfer` (`topic0 = 0xddf252ad…`) du token, de `min(Pool.created_block)` à `peak_block`, joints à leur transaction pour obtenir `tx.from`. Lecture page par page (`next_block`) ; au-delà du plafond de transferts → `REJECTED/too_many_transfers`.
+1. HyperSync : logs `Transfer` (`topic0 = 0xddf252ad…`) du token, de `min(Pool.created_block)` à `peak_block`, joints à leur transaction pour obtenir `tx.from`. Lecture page par page (`next_block`) ; au-delà de `max_transfers_per_token` → `REJECTED/too_many_transfers`.
 2. `aggregate_buyers(transfers, explosion, pools, candles, settings)` (pure) :
    - **achat** : `to == tx.from` et bloc `≤ low_block` ;
    - **sortie** : `from == tx.from`, bloc entre le premier achat et `peak_block` → `sold_amount` ;
@@ -180,15 +202,15 @@ Les acheteurs sont des EOA par construction : seul un EOA signe une transaction.
 
 ## Clients `integrations/`
 
-- `httpx` avec timeout par appel ; retries avec backoff exponentiel sur 429 et 5xx ; erreurs typées (`RateLimited`, `UpstreamError`, `NotFound`).
-- Rate limit partagé entre workers via Redis (token bucket par API) : GeckoTerminal ~30 req/min, HyperSync selon le plan.
+- `httpx` avec timeout `http_timeout_seconds` ; jusqu'à `http_max_retries` retries avec backoff exponentiel sur 429 et 5xx ; erreurs typées (`RateLimited`, `UpstreamError`, `NotFound`).
+- Rate limit partagé entre workers via Redis (token bucket par API) : débits `gecko_requests_per_min` et `hypersync_requests_per_min`. Les clients reçoivent ces réglages en paramètre et ne lisent jamais la base eux-mêmes.
 - HyperSync via le client Python officiel `hypersync`.
 
 Variables d'environnement ajoutées à `.env.example` : `ENVIO_API_TOKEN`, `ZERION_API_KEY`, `COINGECKO_API_KEY` (optionnelle, plan Demo).
 
 ## Gestion des erreurs
 
-- Échec sur un candidat : statut inchangé, `attempts += 1`, repris au prochain passage ; au 3ᵉ échec → `REJECTED/error:<type>`. Le détail de l'exception va dans les logs.
+- Échec sur un candidat : statut inchangé, `attempts += 1`, repris au prochain passage ; à `max_attempts` échecs → `REJECTED/error:<type>`. Le détail de l'exception va dans les logs.
 - Chaîne devenue inactive : ses candidats en cours → `REJECTED/chain_inactive`.
 - Une sous-tâche d'extraction en échec n'affecte pas les autres.
 
@@ -196,6 +218,8 @@ Variables d'environnement ajoutées à `.env.example` : `ENVIO_API_TOKEN`, `ZERI
 
 - `Chain` : liste filtrable, `is_enabled` éditable, le reste en lecture seule.
 - `DetectionSettings` : édition complète.
+- `PipelineSettings` : édition, ajout et suppression désactivés (singleton).
+- Tâches périodiques (`django-celery-beat`) : heure, fréquence, activation.
 - `Candidate` : filtres par statut, chaîne, raison de rejet ; action « Ajouter un token ».
 - `Explosion`, `EarlyBuyer` : lecture seule ; `EarlyBuyer` filtrable par sniper, trié par `bought_usd`.
 
@@ -210,6 +234,7 @@ Variables d'environnement ajoutées à `.env.example` : `ENVIO_API_TOKEN`, `ZERI
 ## Tests
 
 - **Fonctions pures** (`detect_explosion`, `aggregate_buyers`, choix de résolution OHLCV), tests en tableau : pas d'explosion, multiplicateur limite, rug, attente de confirmation, nouveau pic, achat, sortie, airdrop ignoré, sniper, seuil USD, coupe à `max_buyers`.
+- **Réglages** : résolution des seuils (valeur de la chaîne si renseignée, sinon globale) ; `max_buyers` null = pas de plafond ; une modification en base est prise en compte à la tâche suivante.
 - **Clients** : réponses HTTP enregistrées (`respx`), sans réseau.
 - **Tâches** : contre le vrai PostgreSQL, clients simulés ; idempotence (deux exécutions → mêmes lignes) ; transitions de statut ; `attempts`.
 - **Live** : un test par client contre les vraies API, marqué `@pytest.mark.live`, exclu par défaut.
