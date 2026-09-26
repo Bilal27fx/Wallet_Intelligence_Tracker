@@ -23,6 +23,7 @@ def _http(base_url: str, cfg: PipelineSettings, limiter=None, **kwargs) -> JsonH
         limiter=limiter or NoopLimiter(),
         timeout=cfg.http_timeout_seconds,
         max_retries=cfg.http_max_retries,
+        backoff_seconds=cfg.http_backoff_seconds,
         **kwargs,
     )
 

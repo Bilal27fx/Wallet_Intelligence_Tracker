@@ -114,6 +114,9 @@ class PipelineSettings(models.Model):
     hypersync_requests_per_min = models.PositiveIntegerField(default=60)
     http_timeout_seconds = models.PositiveIntegerField(default=15)
     http_max_retries = models.PositiveSmallIntegerField(default=3)
+    http_backoff_seconds = models.PositiveIntegerField(
+        default=5, help_text="Attente avant la 1re nouvelle tentative, doublée à chaque essai."
+    )
 
     class Meta:
         verbose_name = "réglages du pipeline"

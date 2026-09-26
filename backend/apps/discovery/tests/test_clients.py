@@ -22,3 +22,11 @@ def test_hypersync_requires_api_token(settings):
 
 def test_geckoterminal_client_is_built_from_settings():
     assert clients.geckoterminal(PipelineSettings.load()) is not None
+
+
+def test_http_backoff_comes_from_pipeline_settings():
+    cfg = PipelineSettings.load()
+    cfg.http_backoff_seconds = 7
+    cfg.save()
+    client = clients.geckoterminal(PipelineSettings.load())
+    assert client._http._backoff == 7
