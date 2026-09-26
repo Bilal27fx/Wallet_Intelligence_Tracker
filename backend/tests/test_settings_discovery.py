@@ -3,6 +3,7 @@ from django.conf import settings
 
 def test_discovery_apps_installed():
     assert "django_celery_beat" in settings.INSTALLED_APPS
+    assert "apps.discovery" in settings.INSTALLED_APPS
 
 
 def test_beat_uses_database_scheduler():
