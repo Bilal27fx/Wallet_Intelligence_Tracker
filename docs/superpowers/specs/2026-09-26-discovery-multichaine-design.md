@@ -69,7 +69,7 @@ Principe : le strict nécessaire, rien de recalculable. Clés primaires `BigAuto
 | Modèle | Champs |
 |---|---|
 | `Chain` | `gt_id` (unique), `name`, `chain_id` (null si inconnu), `zerion_id` (null si non supporté), `hypersync_supported`, `is_enabled` (défaut `True`), `updated_at` |
-| `DetectionSettings` | `chain` (FK unique, null = ligne globale) + seuils nullables (null = valeur globale) : `min_change_24h_pct`, `min_liquidity_usd`, `min_volume_usd`, `peak_volume_window_hours`, `min_fdv_usd`, `max_fdv_usd`, `max_pool_age_hours`, `min_multiplier`, `min_retention_pct`, `confirmation_hours`, `confirmation_timeout_hours`, `sniper_blocks`, `min_buy_usd`, `max_buyers` (null = pas de plafond) |
+| `DetectionSettings` | `chain` (FK unique, null = ligne globale) + seuils nullables (null = valeur globale) : `min_change_24h_pct`, `min_liquidity_usd`, `min_volume_usd`, `peak_volume_window_hours`, `min_fdv_usd`, `max_fdv_usd`, `max_pool_age_hours`, `min_multiplier`, `min_retention_pct`, `confirmation_hours`, `confirmation_timeout_hours`, `sniper_blocks`, `min_buy_usd`, `max_buyers` (0 = pas de plafond) |
 | `PipelineSettings` | Singleton (une seule ligne) : `trending_pages`, `volume_pages_per_chain`, `max_transfers_per_token`, `max_attempts`, `gecko_requests_per_min`, `hypersync_requests_per_min`, `http_timeout_seconds`, `http_max_retries` |
 | `Token` | `chain`, `address`, `symbol`, `decimals` — unique (`chain`, `address`) |
 | `Pool` | `token`, `address`, `created_block` — unique (`token`, `address`) |
@@ -234,7 +234,7 @@ Variables d'environnement ajoutées à `.env.example` : `ENVIO_API_TOKEN`, `ZERI
 ## Tests
 
 - **Fonctions pures** (`detect_explosion`, `aggregate_buyers`, choix de résolution OHLCV), tests en tableau : pas d'explosion, multiplicateur limite, rug, attente de confirmation, nouveau pic, achat, sortie, airdrop ignoré, sniper, seuil USD, coupe à `max_buyers`.
-- **Réglages** : résolution des seuils (valeur de la chaîne si renseignée, sinon globale) ; `max_buyers` null = pas de plafond ; une modification en base est prise en compte à la tâche suivante.
+- **Réglages** : résolution des seuils (valeur de la chaîne si renseignée, sinon globale) ; `max_buyers = 0` = pas de plafond ; une modification en base est prise en compte à la tâche suivante.
 - **Clients** : réponses HTTP enregistrées (`respx`), sans réseau.
 - **Tâches** : contre le vrai PostgreSQL, clients simulés ; idempotence (deux exécutions → mêmes lignes) ; transitions de statut ; `attempts`.
 - **Live** : un test par client contre les vraies API, marqué `@pytest.mark.live`, exclu par défaut.
