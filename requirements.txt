@@ -1,0 +1,7 @@
+numpy
+pandas
+python-dotenv
+PyYAML
+requests
+schedule
+urllib3
