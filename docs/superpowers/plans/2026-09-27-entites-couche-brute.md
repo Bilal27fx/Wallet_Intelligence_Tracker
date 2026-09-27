@@ -12,10 +12,10 @@
 
 ## Global Constraints
 
-- Aucun paramètre en dur : nouveaux réglages dans l'admin — `DetectionSettings.hub_min_senders` (10), `vault_follow_depth` (2), `bot_window_days` (7) ; `PipelineSettings.zerion_operation_types` (types actuels), `token_info_refresh_days` (30). Réutilisés (valeurs globales de `QualificationSettings`) : `transfer_after_buy_pct`, `deposit_forward_pct`, `deposit_forward_hours`, `max_txs_per_day`.
+- Aucun paramètre en dur : nouveaux réglages dans l'admin — `DetectionSettings.hub_min_senders` (10), `vault_follow_depth` (2), `bot_window_days` (7), `vault_min_pct` (20) ; `PipelineSettings.zerion_operation_types` (types actuels), `token_info_refresh_days` (30). Réutilisés (valeurs globales de `QualificationSettings`) : `deposit_forward_pct`, `deposit_forward_hours`, `max_txs_per_day`.
 - Un bot (> `max_txs_per_day` × `bot_window_days` transactions signées sur les `bot_window_days` jours précédant le creux) est écarté : ni lien ni entité, ses envois sont des sorties.
 - `max_buyers` compte des **entités** ; `min_buy_usd` s'applique à la position de l'entité au creux.
-- Vente = envoi vers un pool du token ; sortie = envoi vers un hub, une adresse de dépôt ou une adresse `KnownAddress` bloquante, ou petit envoi ; transfert d'entité = gros envoi (≥ `transfer_after_buy_pct` % de ce qui est entré chez l'expéditeur) vers toute autre adresse.
+- Vente = envoi vers un pool du token ; sortie = envoi vers un hub, une adresse de dépôt ou une adresse `KnownAddress` bloquante, ou petit envoi ; transfert d'entité = gros envoi (≥ `vault_min_pct` % de ce qui est entré chez l'expéditeur ; `transfer_after_buy_pct`, 70 %, reste le seuil des liens côté qualification) vers toute autre adresse.
 - Prix de revient hérité au **coût moyen** de l'expéditeur au moment du transfert ; date du premier achat = la plus ancienne.
 - Filtre anti-spam Zerion conservé ; pas de bougies stockées.
 - Portefeuille : `/wallets/{a}/positions/?filter[positions]=no_filter` remplace `/portfolio` (un seul appel, total et répartition par chaîne recalculés) — vérifié en live : 577 positions renvoyées en une réponse.
@@ -51,21 +51,21 @@
 - `EntityEarlyBuy(entity, explosion, held_amount, held_usd, first_buy_at, sold_during_rise_pct, rank)` unique (entity, explosion).
 - `ExcludedBuyer(explosion, wallet, reason, txs_per_day, held_usd)` unique (explosion, wallet).
 - `TokenTransfer(explosion, token, tx_hash, log_index, block, at, tx_from, sender, recipient, amount, kind)` unique (token, tx_hash, log_index) ; `TokenTransfer.Kind` = `buy, sell, exit, internal, vault, receive`.
-- `Thresholds.hub_min_senders: int`, `vault_follow_depth: int`, `bot_window_days: int`.
+- `Thresholds.hub_min_senders: int`, `vault_follow_depth: int`, `bot_window_days: int`, `vault_min_pct: float`.
 - `PipelineSettings.zerion_operation_types: str`, `token_info_refresh_days: int`.
 - `WalletLink.source` (`hypersync` / `zerion`, défaut `zerion`), `WalletLink.rejected` (bool), `WalletLink.Kind.TRANSFER_TO_VAULT`; `STRONG_LINKS` inclut `TRANSFER_TO_VAULT`.
 - `TokenTrade.is_internal` (bool, défaut False).
 - `TokenInfo(chain, address, fungible_id, symbol, name, decimals, total_supply, circulating_supply, verified, raw, fetched_at)` unique (chain, address).
 - `PortfolioSnapshot(wallet, fetched_at, total_usd, raw)`, `PortfolioPosition(snapshot, chain, token_address, fungible_id, symbol, position_type, quantity, price_usd, value_usd)`.
 
-- [ ] **Step 1: Tests des défauts** — `test_settings_service.py` : ajouter à l'attendu `hub_min_senders=10, vault_follow_depth=2, bot_window_days=7` et à `test_pipeline_defaults_for_explosion_v2` :
+- [ ] **Step 1: Tests des défauts** — `test_settings_service.py` : ajouter à l'attendu `hub_min_senders=10, vault_follow_depth=2, bot_window_days=7, vault_min_pct=20.0` et à `test_pipeline_defaults_for_explosion_v2` :
 
 ```python
     assert cfg.zerion_operation_types == "trade,send,receive,execute,mint,burn,claim"
     assert cfg.token_info_refresh_days == 30
 ```
 
-Ajouter `hub_min_senders=10, vault_follow_depth=2, bot_window_days=7` au `T` de `test_explosion.py` et à `LIVE_THRESHOLDS` de `test_live.py`.
+Ajouter `hub_min_senders=10, vault_follow_depth=2, bot_window_days=7, vault_min_pct=20` au `T` de `test_explosion.py` et à `LIVE_THRESHOLDS` de `test_live.py`.
 
 Créer `backend/apps/wallets/tests/test_models_entities.py` :
 
@@ -94,7 +94,7 @@ def test_vault_link_is_strong_and_defaults():
 
 - [ ] **Step 2: Vérifier l'échec** — `make test args="apps/discovery/tests/test_settings_service.py apps/wallets/tests/test_models_entities.py"` → FAIL.
 
-- [ ] **Step 3: Modèles discovery** — `THRESHOLD_FIELDS` + `"hub_min_senders", "vault_follow_depth", "bot_window_days"`. Dans `DetectionSettings` :
+- [ ] **Step 3: Modèles discovery** — `THRESHOLD_FIELDS` + `"hub_min_senders", "vault_follow_depth", "bot_window_days", "vault_min_pct"`. Dans `DetectionSettings` :
 
 ```python
     hub_min_senders = models.PositiveIntegerField(
@@ -108,6 +108,13 @@ def test_vault_link_is_strong_and_defaults():
     )
     bot_window_days = models.PositiveSmallIntegerField(
         null=True, blank=True, help_text="Jours avant le creux sur lesquels on mesure l'activité bot."
+    )
+    vault_min_pct = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Envoi minimum (% de ce que l'expéditeur a reçu) pour qu'un envoi crée un coffre.",
     )
 ```
 
@@ -222,7 +229,7 @@ class TokenTransfer(models.Model):
         indexes = [models.Index(fields=["explosion", "sender"], name="discovery_transfer_sender")]
 ```
 
-`settings.py` / `Thresholds` : ajouter à la fin `hub_min_senders: int`, `vault_follow_depth: int`, `bot_window_days: int`.
+`settings.py` / `Thresholds` : ajouter à la fin `hub_min_senders: int`, `vault_follow_depth: int`, `bot_window_days: int`, `vault_min_pct: float`.
 
 - [ ] **Step 4: Modèles wallets** — `WalletLink` :
 
@@ -299,7 +306,7 @@ class PortfolioPosition(models.Model):
 ```python
 def set_defaults(apps, schema_editor):
     apps.get_model("discovery", "DetectionSettings").objects.filter(chain=None).update(
-        hub_min_senders=10, vault_follow_depth=2, bot_window_days=7
+        hub_min_senders=10, vault_follow_depth=2, bot_window_days=7, vault_min_pct=20
     )
 ```
 
@@ -1305,7 +1312,7 @@ def extract_buyers(candidate: Candidate, *, gt, hypersync, cfg: PipelineSettings
         scanner,
         kinds,
         bot_check=bot_checker(hypersync, chain, explosion, thresholds, q),
-        big_pct=q.transfer_after_buy_pct,
+        big_pct=thresholds.vault_min_pct,
         trough_price=trough_price,
         scale=scale,
         min_usd=thresholds.min_buy_usd,
@@ -1322,7 +1329,7 @@ def extract_buyers(candidate: Candidate, *, gt, hypersync, cfg: PipelineSettings
         trough_block=explosion.trough_block,
         pools=scanner.pools,
         exits=exits,
-        big_pct=q.transfer_after_buy_pct,
+        big_pct=thresholds.vault_min_pct,
     )
     batch = max(cfg.sell_pass_batch_size, 1)
     wave, wave_start, rise_links = sorted(group_of), start, []

@@ -49,7 +49,7 @@ Entrée : les transferts du token lus en passe 1 (et en passe entité), les pool
 4. Présent dans `KnownAddress` (types bloquants) → **sortie**.
 5. Sinon → **coffre** : transfert d'entité.
 
-Un envoi est « gros » s'il représente au moins `transfer_after_buy_pct` % de la position de l'expéditeur au moment de l'envoi. Les petits envois vers un coffre restent des sorties (ils réduisent la position sans créer de lien).
+Un envoi est « gros » s'il représente au moins `vault_min_pct` % (réglage de détection, 20 %) de ce qui est entré chez l'expéditeur. Côté qualification, `transfer_after_buy_pct` (70 %) reste le seuil des liens Zerion : sur 6 mois d'historique tous tokens, un seuil strict évite les fusions abusives. Les petits envois vers un coffre restent des sorties (ils réduisent la position sans créer de lien).
 
 ## Filtre bot (découverte)
 
@@ -113,7 +113,7 @@ Position au creux = quantité restante × prix du creux. Les chaînes A → B �
 - `EntityEarlyBuy` : `entity`, `explosion`, `held_usd`, `held_amount`, `first_buy_at`, `sold_during_rise_pct`, `rank` ; unique (entité, explosion).
 - `TokenTransfer`, `TokenInfo`, `PortfolioSnapshot`, `PortfolioPosition` (ci-dessus).
 - `TokenTrade` : + `is_internal`.
-- Réglages : `DetectionSettings` + `hub_min_senders` (10), `vault_follow_depth` (2), `bot_window_days` (7) ; `PipelineSettings` + `zerion_operation_types`, `token_info_refresh_days` (30) ; réutilisés : `transfer_after_buy_pct`, `deposit_forward_pct`, `deposit_forward_hours` (`QualificationSettings`, valeurs globales).
+- Réglages : `DetectionSettings` + `hub_min_senders` (10), `vault_follow_depth` (2), `bot_window_days` (7), `vault_min_pct` (20) ; `PipelineSettings` + `zerion_operation_types`, `token_info_refresh_days` (30) ; réutilisés : `deposit_forward_pct`, `deposit_forward_hours` (`QualificationSettings`, valeurs globales).
 
 ## Admin
 
