@@ -125,9 +125,9 @@ class ExplosionAdmin(ReadOnlyAdmin):
 
 @admin.register(EarlyBuyer)
 class EarlyBuyerAdmin(ReadOnlyAdmin):
-    list_display = ["wallet", "explosion", "bought_usd", "is_sniper", "first_buy_at"]
+    list_display = ["wallet", "explosion", "held_usd", "bought_usd", "is_sniper", "first_buy_at"]
     list_filter = ["is_sniper"]
-    ordering = ["-bought_usd"]
+    ordering = ["-held_usd"]
     search_fields = ["wallet__address"]
     list_select_related = ["wallet", "explosion__candidate__token__chain"]
 

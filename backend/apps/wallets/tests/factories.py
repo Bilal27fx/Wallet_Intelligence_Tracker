@@ -59,6 +59,8 @@ def make_early_buy(
         first_buy_at=NOW,
         bought_amount=bought,
         bought_usd=1000,
+        held_amount=bought,
+        held_usd=1000,
         sold_amount=sold,
         is_sniper=is_sniper,
     )

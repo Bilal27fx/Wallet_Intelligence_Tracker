@@ -59,6 +59,9 @@ def test_stores_significant_eoa_buyers(confirmed):
     alice = buyers[ALICE]
     assert alice.bought_amount == Decimal(1000 * UNIT)
     assert alice.bought_usd == Decimal("1000.00")
+    # Valorisées au prix du creux (0,5 $) : 1 000 tokens → 500 $, 2 000 → 1 000 $.
+    assert (alice.held_amount, alice.held_usd) == (Decimal(1000 * UNIT), Decimal("500.00"))
+    assert buyers[SNIPER].held_usd == Decimal("1000.00")
     assert alice.sold_amount == Decimal(400 * UNIT)
     assert not alice.is_sniper
     assert buyers[SNIPER].is_sniper

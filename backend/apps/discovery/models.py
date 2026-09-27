@@ -85,7 +85,13 @@ class DetectionSettings(models.Model):
     min_retention_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     confirmation_hours = models.PositiveIntegerField(null=True, blank=True)
     sniper_blocks = models.PositiveIntegerField(null=True, blank=True)
-    min_buy_usd = _usd()
+    min_buy_usd = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Position minimum détenue au creux ($) pour retenir un acheteur.",
+    )
     max_buyers = models.PositiveIntegerField(
         null=True, blank=True, help_text="0 = pas de plafond. Vide = valeur globale."
     )
@@ -326,7 +332,21 @@ class EarlyBuyer(models.Model):
     first_buy_at = models.DateTimeField()
     bought_amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0)
     bought_usd = models.DecimalField(max_digits=20, decimal_places=2)
-    sold_amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, default=0)
+    held_amount = models.DecimalField(
+        max_digits=UINT256_DIGITS,
+        decimal_places=0,
+        default=0,
+        help_text="Tokens détenus au creux (achetés − revendus avant le creux).",
+    )
+    held_usd = models.DecimalField(
+        max_digits=20, decimal_places=2, default=0, help_text="Position au creux, au prix du creux."
+    )
+    sold_amount = models.DecimalField(
+        max_digits=UINT256_DIGITS,
+        decimal_places=0,
+        default=0,
+        help_text="Tokens revendus pendant la montée (creux → pic).",
+    )
     is_sniper = models.BooleanField(default=False)
 
     class Meta:

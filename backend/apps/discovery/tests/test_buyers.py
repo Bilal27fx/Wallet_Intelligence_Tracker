@@ -38,7 +38,9 @@ def sell(wallet: str, block: int, tokens: int) -> Transfer:
 
 
 def run(transfers, sells=(), **overrides):
-    params = dict(pool_created_block=100, sniper_blocks=3, min_buy_usd=500, max_buyers=300)
+    params = dict(
+        pool_created_block=100, sniper_blocks=3, min_buy_usd=500, max_buyers=300, trough_ts=10
+    )
     params.update(overrides)
     aggregator = BuyerAggregator(candles=CANDLES, decimals=18)
     for transfer in transfers:
@@ -91,9 +93,29 @@ def test_airdrops_and_mints_are_ignored():
     assert run([airdrop, mint]) == []
 
 
-def test_sells_before_trough_count():
+def test_sells_before_trough_reduce_the_position():
     [alice] = run([buy(ALICE, 200, 600), sell(ALICE, 250, 100)])
-    assert alice.sold_amount == 100 * UNIT
+    assert (alice.held_amount, alice.held_usd, alice.sold_amount) == (500 * UNIT, 500.0, 0)
+    assert alice.bought_usd == 600.0
+
+
+def test_trader_who_sold_everything_before_trough_is_dropped():
+    trader = [buy(ALICE, 200, 50_000), sell(ALICE, 300, 50_000)]
+    [friend] = run(trader + [buy(FRIEND, 400, 600)])
+    assert friend.wallet == FRIEND
+
+
+def test_position_is_valued_at_trough_price():
+    # Acheté 300 tokens à 1 $, le creux est à 2 $ : position de 600 $.
+    [alice] = run([buy(ALICE, 200, 300)], trough_ts=1500)
+    assert (alice.bought_usd, alice.held_usd) == (300.0, 600.0)
+
+
+def test_ranked_by_position_not_volume():
+    churner = [buy(ALICE, 200, 5000), sell(ALICE, 210, 4900)]
+    holder = [buy(FRIEND, 300, 1000)]
+    assert [b.wallet for b in run(churner + holder)] == [FRIEND]
+    assert [b.wallet for b in run(churner + holder, min_buy_usd=50)] == [FRIEND, ALICE]
 
 
 def test_second_pass_sells_update_kept_buyers_only():

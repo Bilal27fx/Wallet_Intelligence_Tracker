@@ -57,6 +57,7 @@ def extract_buyers(
         sniper_blocks=thresholds.sniper_blocks,
         min_buy_usd=thresholds.min_buy_usd,
         max_buyers=thresholds.max_buyers,
+        trough_ts=int(explosion.trough_at.timestamp()),
     )
 
     # Passe 2 : ventes des acheteurs retenus, du creux au pic.
@@ -91,6 +92,8 @@ def extract_buyers(
                     first_buy_at=datetime.fromtimestamp(buyer.first_buy_ts, tz=UTC),
                     bought_amount=Decimal(buyer.bought_amount),
                     bought_usd=Decimal(str(buyer.bought_usd)),
+                    held_amount=Decimal(buyer.held_amount),
+                    held_usd=Decimal(str(buyer.held_usd)),
                     sold_amount=Decimal(buyer.sold_amount),
                     is_sniper=buyer.is_sniper,
                 )

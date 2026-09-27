@@ -351,7 +351,7 @@ def early_buys(wallet) -> list[EarlyBuy]:
             token=e.explosion.candidate.token.address,
             chain_id=e.explosion.candidate.token.chain.zerion_id,
             is_sniper=e.is_sniper,
-            bought=int(e.bought_amount),
+            bought=int(e.held_amount),
             sold_before_peak=int(e.sold_amount),
         )
         for e in EarlyBuyer.objects.filter(wallet=wallet).select_related(
@@ -443,10 +443,10 @@ def value_linked_step(profile: WalletProfile, clients: Clients, now: datetime) -
 
 
 def compute_priority(wallet, cfg) -> float:
-    """Explosions captées (poids fort, un rug compte `rug_priority_weight`), puis montant acheté."""
+    """Explosions captées (poids fort, un rug pèse `rug_priority_weight`), puis position au creux."""
     rug = Q(explosion__retention_status=Explosion.Retention.RUG)
     stats = EarlyBuyer.objects.filter(wallet=wallet).aggregate(
-        kept=Count("id", filter=~rug), rugs=Count("id", filter=rug), usd=Sum("bought_usd")
+        kept=Count("id", filter=~rug), rugs=Count("id", filter=rug), usd=Sum("held_usd")
     )
     explosions = stats["kept"] + float(cfg.rug_priority_weight) * stats["rugs"]
     return explosions * 1_000_000 + min(float(stats["usd"] or 0), 999_999.0)
