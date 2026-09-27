@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from django.db import transaction as db_transaction
-from django.db.models import Max
+from django.db.models import Count, Max, Sum
 
 from apps.discovery.models import Chain, EarlyBuyer
 from apps.wallets.models import (
@@ -440,3 +440,68 @@ def value_linked_step(profile: WalletProfile, clients: Clients, now: datetime) -
     for other in linked_profiles(profile.wallet):
         evaluate_wallet(other)
     return profile.status
+
+
+def compute_priority(wallet) -> float:
+    """Nombre d'explosions captées (poids fort), puis montant total des early buys."""
+    stats = EarlyBuyer.objects.filter(wallet=wallet).aggregate(n=Count("id"), usd=Sum("bought_usd"))
+    return stats["n"] * 1_000_000 + min(float(stats["usd"] or 0), 999_999.0)
+
+
+def enqueue_profiles(now: datetime, cfg) -> int:
+    created = 0
+    new_wallets = (
+        EarlyBuyer.objects.filter(wallet__profile__isnull=True)
+        .values_list("wallet_id", flat=True)
+        .distinct()
+    )
+    for wallet_id in new_wallets:
+        _, was_created = WalletProfile.objects.get_or_create(wallet_id=wallet_id)
+        created += int(was_created)
+
+    waiting = WalletProfile.objects.filter(
+        source=Source.EARLY_BUYER,
+        status__in=[Status.PENDING, Status.PREFILTERED, Status.HISTORY_FETCHED],
+    ).select_related("wallet")
+    for profile in waiting:
+        priority = compute_priority(profile.wallet)
+        if priority != profile.priority:
+            profile.priority = priority
+            profile.save(update_fields=["priority"])
+
+    due = WalletProfile.objects.filter(
+        source=Source.EARLY_BUYER, status=Status.FILTERED, next_analysis_at__lte=now
+    ).select_related("wallet")
+    for profile in due:
+        fresh = EarlyBuyer.objects.filter(
+            wallet_id=profile.wallet_id, explosion__candidate__updated_at__gt=profile.analyzed_at
+        ).exists()
+        if fresh:
+            profile.status = Status.PENDING
+            profile.filter_reason = ""
+            profile.attempts = 0
+            profile.history_cursor = ""
+            profile.history_complete = False
+            profile.priority = compute_priority(profile.wallet)
+            profile.save()
+    return created
+
+
+def qualify_wallet(profile: WalletProfile, clients: Clients, now: datetime, cfg) -> str:
+    if profile.source == Source.LINKED:
+        if profile.status == Status.PENDING:
+            return value_linked_step(profile, clients, now)
+        return profile.status
+    if profile.status == Status.PENDING:
+        prefilter_step(profile, clients, now, cfg)
+    if profile.status == Status.PREFILTERED:
+        history_step(profile, clients, now)
+    if profile.status == Status.HISTORY_FETCHED:
+        decide_step(profile, clients, now, cfg)
+    return profile.status
+
+
+def refresh_wallet(profile: WalletProfile, clients: Clients, now: datetime, cfg) -> str:
+    """Mise à jour incrémentale d'un wallet qualifié : nouvelles transactions, nouvelle décision."""
+    history_step(profile, clients, now)
+    return decide_step(profile, clients, now, cfg)
