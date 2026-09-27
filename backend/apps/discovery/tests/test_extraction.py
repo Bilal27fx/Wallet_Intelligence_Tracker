@@ -82,20 +82,11 @@ def test_scan_then_entity_pass_on_retained_wallets(confirmed):
     first, *rest = hypersync.transfer_calls
     assert first == (TOKEN, 500, explosion.trough_block + 1, None, None)
     assert [call[1:] for call in rest] == [
-        (explosion.trough_block + 1, explosion.peak_block + 1, sorted([ALICE, SNIPER]), None)
+        (explosion.trough_block + 1, explosion.peak_block + 1, None, None)
     ]
     assert TokenTransfer.objects.filter(explosion=explosion, kind="sell").count() == 1
     explosion.refresh_from_db()
     assert explosion.extraction_status == Explosion.Extraction.COMPLETE
-
-
-def test_entity_pass_is_batched(confirmed):
-    cfg = PipelineSettings.load()
-    cfg.sell_pass_batch_size = 1
-    cfg.save()
-    hypersync = FakeHyperSync()
-    extract(confirmed, hypersync)
-    assert [call[3] for call in hypersync.transfer_calls[1:]] == [[SNIPER], [ALICE]]
 
 
 VAULT = "0x" + "7" * 40

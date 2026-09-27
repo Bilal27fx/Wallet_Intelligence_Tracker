@@ -319,8 +319,11 @@ class EntityPass:
         pools: set[str],
         exits: set[str],
         big_pct: float,
+        max_depth: int = 1,
     ):
         self.group_of = dict(group_of)
+        self.depth = dict.fromkeys(group_of, 0)
+        self.max_depth = max_depth
         self.held: dict[str, int] = defaultdict(int, held)
         self.trough_block = trough_block
         self.pools = set(pools)
@@ -352,8 +355,13 @@ class EntityPass:
         big = t.amount * 100 >= self.big_pct * self.held[t.sender] > 0
         if t.recipient in self.pools:
             kind = "sell"
-        elif rise and t.recipient not in self.exits and big:
+        elif rise and t.recipient not in self.exits and big and self._can_follow(t.sender):
+            # Le coffre rejoint l'entité tout de suite : ses envois suivants sont lus dans la
+            # même passe chronologique.
             self._new.setdefault(t.recipient, NewVault(t.sender, t.amount, t.block, t.tx_hash))
+            self.group_of[t.recipient] = self.group_of[t.sender]
+            self.held[t.recipient] += t.amount
+            self.depth[t.recipient] = self.depth.get(t.sender, 0) + 1
             return "vault"
         else:
             kind = "exit"
@@ -361,10 +369,10 @@ class EntityPass:
             self.sold_rise[t.sender] += t.amount
         return kind
 
+    def _can_follow(self, sender: str) -> bool:
+        return self.depth.get(sender, 0) < self.max_depth
+
     def take_new_vaults(self) -> dict[str, NewVault]:
-        """Coffres découverts depuis le dernier appel ; ils rejoignent l'entité de l'expéditeur."""
+        """Coffres découverts depuis le dernier appel (déjà rattachés à l'entité)."""
         new, self._new = self._new, {}
-        for vault, info in new.items():
-            self.group_of[vault] = self.group_of[info.sender]
-            self.held[vault] += info.amount
         return new

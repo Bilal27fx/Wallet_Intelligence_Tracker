@@ -32,7 +32,6 @@ from apps.discovery.services.flows import (
     KNOWN,
     EntityPass,
     FlowScanner,
-    NewVault,
     Selection,
     classify_recipients,
     hubs,
@@ -184,51 +183,39 @@ def extract_buyers(
         pools=scanner.pools,
         exits=hubs(scanner) | {r for r, k in kinds.items() if k in (DEPOSIT, KNOWN)},
         big_pct=thresholds.vault_min_pct,
+        max_depth=thresholds.vault_follow_depth,
     )
-    batch = max(cfg.sell_pass_batch_size, 1)
-    # Avant le creux, la passe 1 sait déjà tout ; pendant la montée seuls les envois comptent.
-    wave, wave_start = sorted(group_of), explosion.trough_block + 1
-    rise_vaults: dict[str, NewVault] = {}
-    for level in range(thresholds.vault_follow_depth + 1):
-        started, pages = time.monotonic(), 0
-        logger.info(
-            "%s passe entité niveau %s : %s wallets, blocs %s → %s",
-            label,
-            level,
-            len(wave),
-            wave_start,
-            explosion.peak_block,
-        )
-        for offset in range(0, len(wave), batch):
-            for page in hypersync.transfer_pages(
-                token.address,
-                wave_start,
-                explosion.peak_block + 1,
-                senders=wave[offset : offset + batch],
-            ):
-                tracker.add(page)
-                pages += 1
-                if pages % LOG_EVERY_PAGES == 0:
-                    logger.info(
-                        "%s passe entité : %s pages, %s transferts retenus, %.0fs",
-                        label,
-                        pages,
-                        len(tracker.rows),
-                        time.monotonic() - started,
-                    )
-        new = tracker.take_new_vaults()
-        logger.info(
-            "%s passe entité niveau %s terminée : %s pages, %s nouveaux coffres, %.0fs",
-            label,
-            level,
-            pages,
-            len(new),
-            time.monotonic() - started,
-        )
-        rise_vaults.update(new)
-        if not new or level == thresholds.vault_follow_depth:
-            break
-        wave, wave_start = sorted(new), min(vault.block for vault in new.values())
+    # Avant le creux, la passe 1 sait déjà tout. Pendant la montée, on relit tous les transferts
+    # du token et on filtre ici : bien plus rapide que le filtre par adresses de HyperSync.
+    started, pages = time.monotonic(), 0
+    logger.info(
+        "%s passe entité : %s wallets, blocs %s → %s",
+        label,
+        len(group_of),
+        explosion.trough_block + 1,
+        explosion.peak_block,
+    )
+    for page in hypersync.transfer_pages(
+        token.address, explosion.trough_block + 1, explosion.peak_block + 1
+    ):
+        tracker.add(page)
+        pages += 1
+        if pages % LOG_EVERY_PAGES == 0:
+            logger.info(
+                "%s passe entité : %s pages, %s transferts retenus, %.0fs",
+                label,
+                pages,
+                len(tracker.rows),
+                time.monotonic() - started,
+            )
+    rise_vaults = tracker.take_new_vaults()
+    logger.info(
+        "%s passe entité terminée : %s pages, %s coffres pendant la montée, %.0fs",
+        label,
+        pages,
+        len(rise_vaults),
+        time.monotonic() - started,
+    )
 
     started = time.monotonic()
     with transaction.atomic():

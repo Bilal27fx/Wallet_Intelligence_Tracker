@@ -195,3 +195,19 @@ def test_entity_pass_ignores_duplicates():
     tracker.add([transfer])
     tracker.add([transfer])
     assert len(tracker.rows) == 1
+
+
+def test_entity_pass_follows_vaults_up_to_max_depth():
+    tracker = EntityPass(
+        group_of={A: 0},
+        held={A: 1000 * UNIT},
+        trough_block=10,
+        pools={POOL},
+        exits=set(),
+        big_pct=20,
+        max_depth=1,
+    )
+    tracker.add([send(11, A, B, 800), send(12, B, C, 800), send(13, B, POOL, 0)])
+    assert [kind for _, kind in tracker.rows] == ["vault", "exit", "sell"]
+    assert list(tracker.take_new_vaults()) == [B]
+    assert tracker.sold_rise[B] == 800 * UNIT
