@@ -186,7 +186,7 @@ def extract_buyers(
         big_pct=thresholds.vault_min_pct,
     )
     batch = max(cfg.sell_pass_batch_size, 1)
-    # Les achats avant le creux sont déjà connus par la passe 1 : on repart du creux.
+    # Avant le creux, la passe 1 sait déjà tout ; pendant la montée seuls les envois comptent.
     wave, wave_start = sorted(group_of), explosion.trough_block + 1
     rise_vaults: dict[str, NewVault] = {}
     for level in range(thresholds.vault_follow_depth + 1):
@@ -204,7 +204,7 @@ def extract_buyers(
                 token.address,
                 wave_start,
                 explosion.peak_block + 1,
-                participants=wave[offset : offset + batch],
+                senders=wave[offset : offset + batch],
             ):
                 tracker.add(page)
                 pages += 1
