@@ -3,7 +3,7 @@
 from collections import defaultdict
 
 from apps.discovery.models import Wallet
-from apps.wallets.models import WalletLink
+from apps.wallets.models import WalletLink, WalletProfile
 from apps.wallets.services.classify import BUY, RECEIVE, SEND
 from apps.wallets.services.positions import TradeRecord
 
@@ -65,3 +65,12 @@ def big_receive_targets(
         for sender, value in received.items()
         if value * 100 >= threshold_pct * inflow
     }
+
+
+def ensure_linked_profile(address: str) -> WalletProfile:
+    """Profil d'un wallet lié direct : valorisé, jamais suivi plus loin."""
+    wallet, _ = Wallet.objects.get_or_create(address=address.lower())
+    profile, _ = WalletProfile.objects.get_or_create(
+        wallet=wallet, defaults={"source": WalletProfile.Source.LINKED, "depth": 1}
+    )
+    return profile

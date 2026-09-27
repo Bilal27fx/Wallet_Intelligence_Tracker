@@ -13,11 +13,20 @@ from apps.wallets.models import (
     KnownAddress,
     TokenPosition,
     TokenTrade,
+    WalletLink,
     WalletProfile,
     WalletTransaction,
 )
 from apps.wallets.services.blocks import block_at
 from apps.wallets.services.classify import classify_all
+from apps.wallets.services.entities import (
+    ZERO_ADDRESS,
+    add_link,
+    big_receive_targets,
+    ensure_linked_profile,
+    transfer_after_buy_targets,
+)
+from apps.wallets.services.exchanges import detect_exchange
 from apps.wallets.services.filters import farmer_reason, mev_ratio, prefilter_reason
 from apps.wallets.services.positions import TradeRecord, aggregate_positions
 from apps.wallets.services.settings import qualification_thresholds
@@ -266,3 +275,52 @@ def history_step(profile: WalletProfile, clients: Clients, now: datetime) -> str
     profile.status = Status.HISTORY_FETCHED
     profile.save(update_fields=["history_complete", "last_mined_at", "status"])
     return profile.status
+
+
+def link_step(profile: WalletProfile, clients: Clients, now: datetime, records) -> None:
+    """Liens forts vers les wallets liés directs (après anti-exchange) + financement informatif."""
+    t = qualification_thresholds()
+    wallet = profile.wallet
+    candidates = [
+        (key, WalletLink.Kind.TRANSFER_AFTER_BUY, evidence, True)
+        for key, evidence in transfer_after_buy_targets(records, t.transfer_after_buy_pct).items()
+    ] + [
+        (key, WalletLink.Kind.BIG_RECEIVE, evidence, False)
+        for key, evidence in big_receive_targets(records, t.big_receive_pct).items()
+    ]
+    contexts: dict[int, tuple] = {}
+
+    def context(chain):
+        if chain.pk not in contexts:
+            hypersync = clients.hypersync_for(chain)
+            contexts[chain.pk] = (hypersync, hypersync.height())
+        return contexts[chain.pk]
+
+    for (chain_id, other), kind, evidence, outgoing in candidates:
+        if other in ("", ZERO_ADDRESS, wallet.address):
+            continue
+        chain = Chain.objects.active().filter(zerion_id=chain_id).first()
+        if chain is None:
+            continue
+        hypersync, height = context(chain)
+        if detect_exchange(other, chain, hypersync, t, now, height):
+            continue
+        source, target = (wallet.address, other) if outgoing else (other, wallet.address)
+        add_link(source, target, kind, {**evidence, "chain": chain_id})
+        ensure_linked_profile(other)
+
+    spotted = Chain.objects.active().filter(
+        gt_id__in=EarlyBuyer.objects.filter(wallet=wallet).values_list(
+            "explosion__candidate__token__chain__gt_id", flat=True
+        )
+    )
+    for chain in spotted:
+        hypersync, height = context(chain)
+        funding = hypersync.first_funding(wallet.address, height)
+        if funding and not KnownAddress.objects.blocking_for(funding.funder, [chain.pk]).exists():
+            add_link(
+                funding.funder,
+                wallet.address,
+                WalletLink.Kind.FUNDING,
+                {"chain": chain.gt_id, "block": funding.block, "value": str(funding.value)},
+            )
