@@ -2,6 +2,7 @@
 
 from collections import Counter
 
+from apps.discovery.models import Chain
 from apps.discovery.services.blocks import find_block_at
 from apps.wallets.models import KnownAddress
 from integrations.hypersync import WalletTransfer
@@ -80,3 +81,32 @@ def detect_exchange(address: str, chain, hypersync, t, now, height: int) -> bool
         register(address, chain, KnownAddress.Kind.CEX_DEPOSIT, f"dépôt vers {destination} (auto)")
         return True
     return False
+
+
+def import_known_addresses(rows: list[dict]) -> int:
+    """Import de listes d'adresses (exchanges, bridges…). Chaîne vide = toutes les chaînes."""
+    chains = {chain.gt_id: chain for chain in Chain.objects.all()}
+    imported = 0
+    for row in rows:
+        address = (row.get("address") or "").strip().lower()
+        kind = (row.get("kind") or "").strip()
+        chain_id = (row.get("chain") or "").strip()
+        if (
+            not address.startswith("0x")
+            or len(address) != 42
+            or kind not in KnownAddress.Kind.values
+        ):
+            continue
+        if chain_id and chain_id not in chains:
+            continue
+        KnownAddress.objects.update_or_create(
+            chain=chains.get(chain_id),
+            address=address,
+            defaults={
+                "kind": kind,
+                "label": (row.get("label") or "").strip()[:128],
+                "source": KnownAddress.Source.IMPORT,
+            },
+        )
+        imported += 1
+    return imported

@@ -1,0 +1,10 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+  <h1>Importer des adresses connues</h1>
+  <p>Colonnes : <code>address</code>, <code>kind</code> (exchange, cex_deposit, service, bridge, router, mev), <code>label</code>, <code>chain</code> (gt_id, vide = toutes les chaînes).</p>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <input type="submit" value="Importer" class="default">
+  </form>
+{% endblock %}
