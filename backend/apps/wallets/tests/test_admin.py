@@ -24,6 +24,8 @@ def admin_client(client, django_user_model):
         "walletlink",
         "knownaddress",
         "qualificationsettings",
+        "tokeninfo",
+        "portfoliosnapshot",
     ],
 )
 def test_changelists_load(admin_client, model):

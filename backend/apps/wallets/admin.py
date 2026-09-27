@@ -11,7 +11,10 @@ from django.urls import path, reverse
 from apps.wallets.forms import KnownAddressImportForm
 from apps.wallets.models import (
     KnownAddress,
+    PortfolioPosition,
+    PortfolioSnapshot,
     QualificationSettings,
+    TokenInfo,
     TokenPosition,
     TokenTrade,
     WalletLink,
@@ -72,7 +75,7 @@ class TokenTradeAdmin(ReadOnlyAdmin):
         "value_usd",
         "counterparty",
     ]
-    list_filter = ["kind", "chain"]
+    list_filter = ["kind", "is_internal", "chain"]
     search_fields = ["wallet__address", "token_address", "token_symbol", "transaction__tx_hash"]
     ordering = ["-mined_at"]
     list_select_related = ["wallet"]
@@ -98,8 +101,16 @@ class TokenPositionAdmin(ReadOnlyAdmin):
 
 @admin.register(WalletLink)
 class WalletLinkAdmin(ReadOnlyAdmin):
-    list_display = ["from_wallet", "to_wallet", "kind", "evidence", "created_at"]
-    list_filter = ["kind"]
+    list_display = [
+        "from_wallet",
+        "to_wallet",
+        "kind",
+        "source",
+        "rejected",
+        "evidence",
+        "created_at",
+    ]
+    list_filter = ["kind", "source", "rejected"]
     search_fields = ["from_wallet__address", "to_wallet__address"]
 
 
@@ -139,3 +150,29 @@ class QualificationSettingsAdmin(admin.ModelAdmin):
         "max_txs_per_day",
         "big_receive_pct",
     ]
+
+
+@admin.register(TokenInfo)
+class TokenInfoAdmin(ReadOnlyAdmin):
+    list_display = ["symbol", "chain", "address", "total_supply", "verified", "fetched_at"]
+    list_filter = ["verified", "chain"]
+    search_fields = ["symbol", "address", "fungible_id"]
+
+
+class PortfolioPositionInline(admin.TabularInline):
+    model = PortfolioPosition
+    fields = ["chain", "symbol", "token_address", "position_type", "quantity", "value_usd"]
+    readonly_fields = fields
+    extra = 0
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(PortfolioSnapshot)
+class PortfolioSnapshotAdmin(ReadOnlyAdmin):
+    list_display = ["wallet", "fetched_at", "total_usd"]
+    search_fields = ["wallet__address"]
+    exclude = ["raw"]
+    inlines = [PortfolioPositionInline]

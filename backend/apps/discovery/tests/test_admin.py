@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 from django.urls import reverse
 
-from apps.discovery.models import Candidate, EarlyBuyer, PipelineSettings
+from apps.discovery.models import Candidate, EarlyBuyer, Entity, PipelineSettings, Wallet
 from apps.discovery.tests.factories import make_chain
 from apps.discovery.tests.fakes import TOKEN, FakeGeckoTerminal
 
@@ -27,6 +27,10 @@ def admin_client(client, django_user_model):
         "explosion",
         "earlybuyer",
         "wallet",
+        "entity",
+        "entityearlybuy",
+        "excludedbuyer",
+        "tokentransfer",
     ],
 )
 def test_changelists_load(admin_client, model):
@@ -64,3 +68,23 @@ def test_manual_add_shows_error_when_no_pool(admin_client):
     assert response.status_code == 200
     assert "Aucun pool" in response.content.decode()
     assert not Candidate.objects.exists()
+
+
+def test_entity_page_lists_wallets(admin_client):
+    entity = Entity.objects.create()
+    Wallet.objects.create(address="0x" + "1" * 40, entity=entity)
+    url = reverse("admin:discovery_entity_change", args=[entity.pk])
+    response = admin_client.get(url)
+    assert response.status_code == 200
+    assert "0x" + "1" * 40 in response.content.decode()
+
+
+def test_detach_action(admin_client):
+    entity = Entity.objects.create()
+    wallet = Wallet.objects.create(address="0x" + "1" * 40, entity=entity)
+    admin_client.post(
+        reverse("admin:discovery_wallet_changelist"),
+        {"action": "detach_from_entity", "_selected_action": [wallet.pk]},
+    )
+    wallet.refresh_from_db()
+    assert wallet.entity_id not in (None, entity.pk)
