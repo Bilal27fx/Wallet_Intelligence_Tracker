@@ -10,7 +10,8 @@ from integrations import geckoterminal as gt
 from integrations import zerion as zr
 from integrations.http import JsonHttpClient
 from integrations.hypersync import CHAINS_URL, HyperSyncClient, HyperSyncDirectory
-from integrations.ratelimit import NoopLimiter, RateLimiter
+from integrations.ratelimit import DailyBudget, NoopLimiter, RateLimiter
+from integrations.rpc import RpcClient
 
 
 def _redis() -> redis.Redis:
@@ -43,7 +44,17 @@ def coingecko(cfg: PipelineSettings) -> cg.CoinGeckoClient:
 def zerion(cfg: PipelineSettings) -> zr.ZerionClient:
     if not settings.ZERION_API_KEY:
         raise ImproperlyConfigured("ZERION_API_KEY manquante")
-    return zr.ZerionClient(_http(zr.BASE_URL, cfg, auth=(settings.ZERION_API_KEY, "")))
+    limiter = RateLimiter(_redis(), "zerion", cfg.zerion_requests_per_min)
+    budget = DailyBudget(_redis(), "zerion", cfg.zerion_daily_budget)
+    return zr.ZerionClient(
+        _http(zr.BASE_URL, cfg, limiter, auth=(settings.ZERION_API_KEY, ""), budget=budget)
+    )
+
+
+def rpc(chain: Chain, cfg: PipelineSettings) -> RpcClient:
+    if not chain.rpc_url:
+        raise ImproperlyConfigured(f"{chain.gt_id} : aucun RPC public connu")
+    return RpcClient(_http(chain.rpc_url, cfg))
 
 
 def hypersync_directory(cfg: PipelineSettings) -> HyperSyncDirectory:
