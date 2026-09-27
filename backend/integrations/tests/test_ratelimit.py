@@ -1,9 +1,11 @@
 import uuid
 
+import pytest
 import redis
 from django.conf import settings
 
-from integrations.ratelimit import NoopLimiter, RateLimiter
+from integrations.errors import BudgetExhausted
+from integrations.ratelimit import DailyBudget, NoBudget, NoopLimiter, RateLimiter
 
 
 class FakeClock:
@@ -63,3 +65,32 @@ def test_limiters_with_same_name_share_the_pace():
 
 def test_noop_limiter_never_waits():
     NoopLimiter().acquire()
+
+
+def make_budget(per_day: int, clock: FakeClock) -> DailyBudget:
+    client = redis.Redis.from_url(settings.REDIS_URL)
+    return DailyBudget(client, f"test-{uuid.uuid4()}", per_day, clock=clock.time)
+
+
+def test_budget_allows_up_to_limit_then_raises():
+    clock = FakeClock(now=86_400 * 100 + 10)
+    budget = make_budget(2, clock)
+    budget.consume()
+    budget.consume()
+    assert budget.remaining() == 0
+    with pytest.raises(BudgetExhausted):
+        budget.consume()
+
+
+def test_budget_resets_the_next_day():
+    clock = FakeClock(now=86_400 * 200 + 10)
+    budget = make_budget(1, clock)
+    budget.consume()
+    clock.now += 86_400
+    budget.consume()
+    assert budget.remaining() == 0
+
+
+def test_no_budget_never_raises():
+    for _ in range(5):
+        NoBudget().consume()
