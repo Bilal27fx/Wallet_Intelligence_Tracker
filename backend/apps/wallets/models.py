@@ -1,4 +1,4 @@
-"""Qualification : profils, historique par token, entités, liens, adresses, prix, réglages."""
+"""Qualification v2 : profils, transactions et mouvements Zerion, positions, liens, réglages."""
 
 from django.contrib.postgres.fields import ArrayField
 from django.contrib.postgres.indexes import GinIndex
@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
-from apps.discovery.models import UINT256_DIGITS, Chain, Token, Wallet
+from apps.discovery.models import UINT256_DIGITS, Chain, Wallet
 
 QUALIFICATION_FIELDS = (
     "max_txs_per_day",
@@ -19,8 +19,7 @@ QUALIFICATION_FIELDS = (
     "min_portfolio_usd",
     "max_portfolio_usd",
     "transfer_after_buy_pct",
-    "follow_depth",
-    "funder_max_wallets",
+    "big_receive_pct",
     "hot_wallet_min_counterparties",
     "deposit_forward_pct",
     "deposit_forward_hours",
@@ -40,27 +39,17 @@ def _amount(**kwargs):
     return models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, **kwargs)
 
 
-class Entity(models.Model):
-    portfolio_value_usd = models.DecimalField(
-        max_digits=20, decimal_places=2, null=True, blank=True
-    )
-    tags = ArrayField(models.CharField(max_length=32), default=list, blank=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name_plural = "entities"
-        indexes = [GinIndex(fields=["tags"], name="wallets_entity_tags")]
-
-    def __str__(self):
-        return f"Entité #{self.pk}"
+def _usd(**kwargs):
+    return models.DecimalField(max_digits=20, decimal_places=2, **kwargs)
 
 
 class WalletProfile(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "En attente"
-        PREFILTERED = "prefiltered", "Pré-filtré"
-        HISTORY_FETCHED = "history_fetched", "Historique récupéré"
+        PREFILTERED = "prefiltered", "Pré-filtré (historique en cours)"
+        HISTORY_FETCHED = "history_fetched", "Historique complet"
         QUALIFIED = "qualified", "Qualifié"
+        VALUED = "valued", "Wallet lié valorisé"
         FILTERED = "filtered", "Écarté"
 
     class Source(models.TextChoices):
@@ -70,15 +59,15 @@ class WalletProfile(models.Model):
     wallet = models.OneToOneField(Wallet, on_delete=models.CASCADE, related_name="profile")
     source = models.CharField(max_length=16, choices=Source.choices, default=Source.EARLY_BUYER)
     depth = models.PositiveSmallIntegerField(default=0)
-    chains = ArrayField(models.PositiveBigIntegerField(), default=list, blank=True)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
     filter_reason = models.CharField(max_length=64, blank=True, default="")
-    entity = models.ForeignKey(
-        Entity, null=True, blank=True, on_delete=models.SET_NULL, related_name="profiles"
-    )
-    portfolio_value_usd = models.DecimalField(
-        max_digits=20, decimal_places=2, null=True, blank=True
-    )
+    priority = models.FloatField(default=0)
+    active_chains = ArrayField(models.CharField(max_length=64), default=list, blank=True)
+    portfolio_value_usd = _usd(null=True, blank=True)
+    linked_value_usd = _usd(null=True, blank=True)
+    history_cursor = models.CharField(max_length=1024, blank=True, default="")
+    history_complete = models.BooleanField(default=False)
+    last_mined_at = models.DateTimeField(null=True, blank=True)
     metrics = models.JSONField(default=dict, blank=True)
     tags = ArrayField(models.CharField(max_length=32), default=list, blank=True)
     attempts = models.PositiveSmallIntegerField(default=0)
@@ -87,7 +76,7 @@ class WalletProfile(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["status", "next_analysis_at"], name="wallets_profile_status"),
+            models.Index(fields=["status", "priority"], name="wallets_profile_status_prio"),
             GinIndex(fields=["tags"], name="wallets_profile_tags"),
         ]
 
@@ -95,31 +84,28 @@ class WalletProfile(models.Model):
         return str(self.wallet)
 
 
-class TokenPosition(models.Model):
-    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="positions")
-    token = models.ForeignKey(Token, on_delete=models.CASCADE, related_name="positions")
-    bought_amount = _amount(default=0)
-    sold_amount = _amount(default=0)
-    sent_amount = _amount(default=0)
-    received_amount = _amount(default=0)
-    bought_usd = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-    sold_usd = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-    buys = models.PositiveIntegerField(default=0)
-    sells = models.PositiveIntegerField(default=0)
-    first_at = models.DateTimeField()
-    last_at = models.DateTimeField()
+class WalletTransaction(models.Model):
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="transactions")
+    zerion_id = models.CharField(max_length=64)
+    chain = models.CharField(max_length=64)
+    tx_hash = models.CharField(max_length=66)
+    block = models.PositiveBigIntegerField(null=True, blank=True)
+    mined_at = models.DateTimeField()
+    operation_type = models.CharField(max_length=16)
+    status = models.CharField(max_length=16)
+    fee_usd = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    raw = models.JSONField(default=dict)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["wallet", "token"], name="wallets_unique_position")
+            models.UniqueConstraint(
+                fields=["wallet", "zerion_id"], name="wallets_unique_transaction"
+            )
         ]
+        indexes = [models.Index(fields=["wallet", "mined_at"], name="wallets_tx_wallet_date")]
 
     def __str__(self):
-        return f"{self.wallet} · {self.token}"
-
-    @property
-    def balance(self):
-        return self.bought_amount + self.received_amount - self.sold_amount - self.sent_amount
+        return f"{self.operation_type} {self.tx_hash[:10]} ({self.chain})"
 
 
 class TokenTrade(models.Model):
@@ -129,35 +115,78 @@ class TokenTrade(models.Model):
         SEND = "send", "Envoi"
         RECEIVE = "receive", "Réception"
 
+    transaction = models.ForeignKey(
+        WalletTransaction, on_delete=models.CASCADE, related_name="trades"
+    )
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="trades")
-    token = models.ForeignKey(Token, on_delete=models.CASCADE, related_name="trades")
+    transfer_index = models.PositiveSmallIntegerField()
+    chain = models.CharField(max_length=64)
+    token_address = models.CharField(max_length=66)
+    token_symbol = models.CharField(max_length=64, blank=True, default="")
+    token_decimals = models.PositiveSmallIntegerField(default=0)
+    fungible_id = models.CharField(max_length=100, blank=True, default="")
     kind = models.CharField(max_length=8, choices=Kind.choices)
+    direction = models.CharField(max_length=4)
+    quantity = models.DecimalField(max_digits=60, decimal_places=18)
     amount = _amount()
-    usd = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    price_usd = models.DecimalField(max_digits=40, decimal_places=18, null=True, blank=True)
+    value_usd = _usd(null=True, blank=True)
     counterparty = models.CharField(max_length=42, blank=True, default="")
-    block = models.PositiveBigIntegerField()
-    at = models.DateTimeField()
-    tx_hash = models.CharField(max_length=66)
-    log_index = models.PositiveIntegerField()
+    block = models.PositiveBigIntegerField(null=True, blank=True)
+    mined_at = models.DateTimeField()
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["tx_hash", "log_index", "wallet"], name="wallets_unique_trade"
+                fields=["transaction", "transfer_index"], name="wallets_unique_transfer"
             )
         ]
         indexes = [
-            models.Index(fields=["wallet", "token", "at"], name="wallets_trade_wallet_token")
+            models.Index(
+                fields=["wallet", "chain", "token_address", "mined_at"], name="wallets_trade_token"
+            )
         ]
 
     def __str__(self):
-        return f"{self.get_kind_display()} {self.token} ({self.tx_hash[:10]})"
+        return f"{self.get_kind_display()} {self.token_symbol or self.token_address}"
+
+
+class TokenPosition(models.Model):
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="positions")
+    chain = models.CharField(max_length=64)
+    token_address = models.CharField(max_length=66)
+    token_symbol = models.CharField(max_length=64, blank=True, default="")
+    bought_amount = _amount(default=0)
+    sold_amount = _amount(default=0)
+    sent_amount = _amount(default=0)
+    received_amount = _amount(default=0)
+    bought_usd = _usd(default=0)
+    sold_usd = _usd(default=0)
+    buys = models.PositiveIntegerField(default=0)
+    sells = models.PositiveIntegerField(default=0)
+    first_at = models.DateTimeField()
+    last_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["wallet", "chain", "token_address"], name="wallets_unique_position"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.wallet} · {self.token_symbol or self.token_address}"
+
+    @property
+    def balance(self):
+        return self.bought_amount + self.received_amount - self.sold_amount - self.sent_amount
 
 
 class WalletLink(models.Model):
     class Kind(models.TextChoices):
         TRANSFER_AFTER_BUY = "transfer_after_buy", "Transfert après achat"
-        FUNDING = "funding", "Financement initial"
+        BIG_RECEIVE = "big_receive", "Gros transfert reçu"
+        FUNDING = "funding", "Financement initial (information)"
 
     from_wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="links_out")
     to_wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="links_in")
@@ -174,6 +203,9 @@ class WalletLink(models.Model):
 
     def __str__(self):
         return f"{self.from_wallet} → {self.to_wallet} ({self.kind})"
+
+
+STRONG_LINKS = (WalletLink.Kind.TRANSFER_AFTER_BUY, WalletLink.Kind.BIG_RECEIVE)
 
 
 class KnownAddressQuerySet(models.QuerySet):
@@ -224,22 +256,8 @@ class KnownAddress(models.Model):
         return f"{self.label or self.address} ({self.kind})"
 
 
-class DailyPrice(models.Model):
-    fungible_id = models.CharField(max_length=100)
-    day = models.DateField()
-    usd = models.FloatField()
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=["fungible_id", "day"], name="wallets_unique_price")
-        ]
-
-    def __str__(self):
-        return f"{self.fungible_id} {self.day} {self.usd}"
-
-
-def _int_setting(**kwargs):
-    return models.PositiveIntegerField(null=True, blank=True, **kwargs)
+def _int_setting():
+    return models.PositiveIntegerField(null=True, blank=True)
 
 
 def _decimal_setting():
@@ -264,8 +282,7 @@ class QualificationSettings(models.Model):
     min_portfolio_usd = _decimal_setting()
     max_portfolio_usd = _decimal_setting()
     transfer_after_buy_pct = _decimal_setting()
-    follow_depth = _int_setting()
-    funder_max_wallets = _int_setting()
+    big_receive_pct = _decimal_setting()
     hot_wallet_min_counterparties = _int_setting()
     deposit_forward_pct = _decimal_setting()
     deposit_forward_hours = _int_setting()

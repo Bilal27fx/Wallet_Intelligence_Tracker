@@ -44,8 +44,6 @@ def test_sync_stores_rpc_and_native_assets():
 
 def test_pipeline_settings_qualification_defaults():
     cfg = PipelineSettings.load()
-    assert cfg.zerion_daily_budget == 250
-    assert cfg.zerion_requests_per_min == 50
-    assert cfg.stablecoin_symbols == ["USDC", "USDT", "DAI"]
-    assert cfg.extra_chains == []
+    assert cfg.zerion_daily_budget == 1800
+    assert cfg.zerion_requests_per_min == 300
     assert cfg.qualification_batch_size == 100

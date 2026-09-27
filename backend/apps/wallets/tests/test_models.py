@@ -3,14 +3,15 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django_celery_beat.models import PeriodicTask
 
-from apps.discovery.models import Wallet
-from apps.discovery.tests.factories import make_chain, make_token
+from apps.discovery.models import PipelineSettings, Wallet
+from apps.discovery.tests.factories import make_chain
 from apps.wallets.models import (
     KnownAddress,
     QualificationSettings,
     TokenPosition,
     TokenTrade,
     WalletProfile,
+    WalletTransaction,
 )
 from apps.wallets.services.settings import qualification_thresholds
 
@@ -19,11 +20,8 @@ pytestmark = pytest.mark.django_db
 
 def test_global_defaults_from_migration():
     t = qualification_thresholds()
-    assert t.max_txs_per_day == 200
-    assert t.history_days == 365
-    assert t.min_portfolio_usd == 10_000.0
-    assert t.transfer_after_buy_pct == 70.0
-    assert t.accumulator_min_positions == 2
+    assert (t.max_txs_per_day, t.history_days) == (50, 180)
+    assert (t.big_receive_pct, t.transfer_after_buy_pct) == (30.0, 70.0)
 
 
 def test_chain_override_and_inheritance():
@@ -31,7 +29,7 @@ def test_chain_override_and_inheritance():
     QualificationSettings.objects.create(chain=chain, history_days=90)
     t = qualification_thresholds(chain)
     assert t.history_days == 90
-    assert t.max_txs_per_day == 200
+    assert t.max_txs_per_day == 50
 
 
 def test_global_settings_require_every_threshold():
@@ -45,18 +43,28 @@ def test_daily_task_scheduled_at_8():
     assert (task.crontab.minute, task.crontab.hour) == ("0", "8")
 
 
-def test_trade_is_unique_per_log_and_wallet():
-    token = make_token()
+def test_transfer_is_unique_per_transaction_index():
     wallet = Wallet.objects.create(address="0x" + "a" * 40)
-    values = dict(
+    tx = WalletTransaction.objects.create(
         wallet=wallet,
-        token=token,
-        kind="buy",
-        amount=1,
-        block=1,
-        at="2026-09-27T00:00Z",
+        zerion_id="z1",
+        chain="base",
         tx_hash="0xt",
-        log_index=0,
+        mined_at="2026-09-27T00:00Z",
+        operation_type="trade",
+        status="confirmed",
+    )
+    values = dict(
+        transaction=tx,
+        wallet=wallet,
+        transfer_index=0,
+        chain="base",
+        token_address="native",
+        kind="buy",
+        direction="in",
+        quantity=1,
+        amount=1,
+        mined_at="2026-09-27T00:00Z",
     )
     TokenTrade.objects.create(**values)
     with pytest.raises(IntegrityError), transaction.atomic():
@@ -80,9 +88,27 @@ def test_blocking_known_addresses():
 
 def test_profile_defaults():
     profile = WalletProfile.objects.create(wallet=Wallet.objects.create(address="0x" + "b" * 40))
-    assert (profile.status, profile.source, profile.depth, profile.tags) == (
+    assert (
+        profile.status,
+        profile.source,
+        profile.depth,
+        profile.tags,
+        profile.history_complete,
+    ) == (
         "pending",
         "early_buyer",
         0,
         [],
+        False,
+    )
+
+
+def test_pipeline_v2_defaults():
+    cfg = PipelineSettings.load()
+    assert cfg.prefilter_chains == ["base", "robinhood", "bsc", "eth", "arc"]
+    assert "USDC" in cfg.quote_symbols
+    assert (cfg.zerion_daily_budget, cfg.zerion_requests_per_min, cfg.history_refresh_days) == (
+        1800,
+        300,
+        7,
     )

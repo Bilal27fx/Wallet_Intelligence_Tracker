@@ -38,7 +38,7 @@ def test_zerion_client_has_rate_limit_and_daily_budget(settings):
     http = clients.zerion(PipelineSettings.load())._http
     assert isinstance(http._limiter, RateLimiter)
     assert isinstance(http._budget, DailyBudget)
-    assert http._budget._per_day == 250
+    assert http._budget._per_day == 1800
 
 
 def test_rpc_requires_public_url():

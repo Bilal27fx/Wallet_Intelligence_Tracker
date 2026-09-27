@@ -6,7 +6,6 @@ from apps.wallets.services.tags import (
     HOLDER,
     SNIPER,
     EarlyBuy,
-    entity_tags,
     wallet_tags,
 )
 from apps.wallets.tests.factories import make_thresholds
@@ -59,9 +58,3 @@ def test_accumulator_needs_enough_positions():
 def test_quote_tokens_are_ignored():
     records = [rec("buy", "0xusdc", 100, 0), rec("sell", "0xusdc", 100, H)]
     assert wallet_tags(records, [], {"0xusdc"}, T) == []
-
-
-def test_entity_tags_union_and_internal_holding():
-    assert entity_tags([[SNIPER], [ACCUMULATEUR, SNIPER]], internal_holding=True) == sorted(
-        [ACCUMULATEUR, HOLDER, SNIPER]
-    )

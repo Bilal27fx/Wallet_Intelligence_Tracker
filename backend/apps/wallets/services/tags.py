@@ -73,10 +73,3 @@ def wallet_tags(
         if sum(1 for rs in bought_positions if _accumulating(rs, t)) >= t.accumulator_min_positions:
             tags.add(ACCUMULATEUR)
     return sorted(tags)
-
-
-def entity_tags(member_tags: list[list[str]], internal_holding: bool) -> list[str]:
-    tags = {tag for member in member_tags for tag in member}
-    if internal_holding:
-        tags.add(HOLDER)
-    return sorted(tags)

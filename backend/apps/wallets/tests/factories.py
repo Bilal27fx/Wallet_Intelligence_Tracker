@@ -1,22 +1,24 @@
 """Fabriques de test de la qualification."""
 
+from datetime import UTC, datetime
+
 from apps.discovery.models import Candidate, EarlyBuyer, Explosion, Token
 from apps.wallets.services.settings import QualificationThresholds
-from apps.wallets.tests.fakes import NOW
+
+NOW = datetime(2026, 9, 27, 12, tzinfo=UTC)
 
 DEFAULT_THRESHOLDS = dict(
-    max_txs_per_day=200,
+    max_txs_per_day=50,
     max_distinct_tokens=300,
     inactive_days=90,
     min_txs_active=5,
-    history_days=365,
+    history_days=180,
     max_mev_ratio=30.0,
     min_distinct_buys=3,
     min_portfolio_usd=10_000.0,
     max_portfolio_usd=50_000_000.0,
     transfer_after_buy_pct=70.0,
-    follow_depth=1,
-    funder_max_wallets=50,
+    big_receive_pct=30.0,
     hot_wallet_min_counterparties=1000,
     deposit_forward_pct=90.0,
     deposit_forward_hours=24,

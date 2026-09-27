@@ -114,7 +114,16 @@ class DetectionSettings(models.Model):
 
 
 def default_stablecoins() -> list[str]:
+    # Conservée pour la migration 0005 (champ supprimé depuis).
     return ["USDC", "USDT", "DAI"]
+
+
+def default_prefilter_chains() -> list[str]:
+    return ["base", "robinhood", "bsc", "eth", "arc"]
+
+
+def default_quote_symbols() -> list[str]:
+    return ["ETH", "WETH", "BNB", "WBNB", "USDC", "USDT", "DAI", "USDC.E", "USDBC", "FDUSD"]
 
 
 class PipelineSettings(models.Model):
@@ -130,14 +139,17 @@ class PipelineSettings(models.Model):
     http_backoff_seconds = models.PositiveIntegerField(
         default=5, help_text="Attente avant la 1re nouvelle tentative, doublée à chaque essai."
     )
-    zerion_daily_budget = models.PositiveIntegerField(default=250)
-    zerion_requests_per_min = models.PositiveIntegerField(default=50)
-    stablecoin_symbols = models.JSONField(default=default_stablecoins)
-    extra_chains = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="gt_id des chaînes analysées en plus pour chaque wallet.",
+    zerion_daily_budget = models.PositiveIntegerField(default=1800)
+    zerion_requests_per_min = models.PositiveIntegerField(default=300)
+    prefilter_chains = models.JSONField(
+        default=default_prefilter_chains,
+        help_text="gt_id des chaînes du pré-filtre HyperSync (+ chaîne où le wallet est repéré).",
     )
+    quote_symbols = models.JSONField(
+        default=default_quote_symbols,
+        help_text="Monnaies de paiement : leurs jambes de trade ne comptent pas comme achats.",
+    )
+    history_refresh_days = models.PositiveIntegerField(default=7)
     qualification_batch_size = models.PositiveIntegerField(default=100)
 
     class Meta:

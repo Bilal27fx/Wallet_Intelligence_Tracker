@@ -21,8 +21,7 @@ class QualificationThresholds:
     min_portfolio_usd: float
     max_portfolio_usd: float
     transfer_after_buy_pct: float
-    follow_depth: int
-    funder_max_wallets: int
+    big_receive_pct: float
     hot_wallet_min_counterparties: int
     deposit_forward_pct: float
     deposit_forward_hours: int
