@@ -14,7 +14,7 @@ from apps.discovery.tests.fakes import (
     FakeZerion,
 )
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("young_waves")]
 
 
 @pytest.fixture

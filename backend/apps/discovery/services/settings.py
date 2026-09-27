@@ -27,6 +27,8 @@ class Thresholds:
     maturity_hours: int
     breakout_multiplier: float
     buyer_window_hours: int
+    min_score: float
+    max_multiplier: float
 
 
 def thresholds_for(chain: Chain) -> Thresholds:

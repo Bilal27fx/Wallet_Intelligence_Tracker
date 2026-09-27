@@ -2,7 +2,7 @@ from datetime import timedelta
 
 import pytest
 
-from apps.discovery.models import Candidate, Explosion, Pool
+from apps.discovery.models import Candidate, DetectionSettings, Explosion, Pool
 from apps.discovery.services.analysis import analyze_candidate, update_retention
 from apps.discovery.tests.factories import make_candidate, make_chain, make_token
 from apps.discovery.tests.fakes import (
@@ -18,7 +18,7 @@ from apps.discovery.tests.fakes import (
     explosive_candles,
 )
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("young_waves")]
 
 
 @pytest.fixture
@@ -81,6 +81,13 @@ def test_peak_outside_window_is_rejected_unless_manual(candidate):
     assert analyze(candidate, now=later) == Candidate.Status.REJECTED
     manual = make_candidate(candidate.token, sources=["manual"])
     assert analyze(manual, now=later) == Candidate.Status.CONFIRMED
+
+
+def test_launch_pump_is_rejected(candidate):
+    DetectionSettings.objects.filter(chain=None).update(min_score=5)
+    assert analyze(candidate) == Candidate.Status.REJECTED
+    candidate.refresh_from_db()
+    assert candidate.rejection_reason == "low_score"
 
 
 def test_inactive_chain_is_rejected(candidate):

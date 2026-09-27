@@ -36,6 +36,8 @@ T = Thresholds(
     maturity_hours=0,
     breakout_multiplier=2,
     buyer_window_hours=0,
+    min_score=0,
+    max_multiplier=0,
 )
 
 
@@ -119,6 +121,28 @@ def test_mature_wave_beats_bigger_launch_wave():
     )
     unweighted = detect(closes, now_ts=40 * DAY, step=DAY, volume=100_000)
     assert unweighted.wave.multiplier == 50.0
+
+
+def test_launch_pump_is_rejected_by_min_score():
+    # ×10 dont le creux est 2 h après la création : score 10 × 2/336 ≈ 0,06.
+    verdict = detect(EXPLOSIVE, maturity_hours=336, min_score=5)
+    assert (verdict.status, verdict.reason) == (REJECTED, "low_score")
+
+
+def test_mature_wave_passes_min_score():
+    closes = [1.0, 1.0, 0.1, 5.0] + [2.0] * 29 + [1.0, 10.0] + [8.0] * 3
+    verdict = detect(
+        closes, now_ts=40 * DAY, step=DAY, volume=100_000, maturity_hours=336, min_score=5
+    )
+    assert verdict.status == CONFIRMED
+
+
+def test_anomalous_multiplier_is_ignored():
+    # Pool vidé : le prix tombe à ~0 puis repart, ×1 000 000 n'est pas une explosion.
+    closes = [1.0, 0.000001, 1.0] + [0.9] * 30
+    verdict = detect(closes, max_multiplier=10_000)
+    assert (verdict.status, verdict.reason) == (REJECTED, "no_explosion")
+    assert detect(closes).status == CONFIRMED
 
 
 def test_rejects_small_move():

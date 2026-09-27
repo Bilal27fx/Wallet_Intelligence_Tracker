@@ -110,9 +110,13 @@ def detect_explosion(
             candles, pool_created_ts=pool_created_ts, since_ts=since_ts, thresholds=thresholds
         )
         if wave.multiplier >= thresholds.min_multiplier
+        and (thresholds.max_multiplier <= 0 or wave.multiplier <= thresholds.max_multiplier)
     ]
     if not waves:
         return Verdict(REJECTED, "no_explosion")
+    waves = [wave for wave in waves if wave.score >= thresholds.min_score]
+    if not waves:
+        return Verdict(REJECTED, "low_score")
 
     half_window = thresholds.peak_volume_window_hours * 3600 / 2
     waves = [

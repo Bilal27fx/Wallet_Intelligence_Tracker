@@ -28,6 +28,8 @@ def test_migration_creates_global_defaults():
         maturity_hours=336,
         breakout_multiplier=2.0,
         buyer_window_hours=0,
+        min_score=5.0,
+        max_multiplier=10_000.0,
     )
 
 
@@ -56,4 +58,5 @@ def test_daily_periodic_task_exists():
 def test_pipeline_defaults_for_explosion_v2():
     cfg = PipelineSettings.load()
     assert cfg.sell_pass_batch_size == 500
+    assert cfg.max_transfers_per_token == 2_000_000
     assert float(cfg.rug_priority_weight) == 0.2

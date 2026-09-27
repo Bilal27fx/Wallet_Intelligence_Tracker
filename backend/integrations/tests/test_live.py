@@ -72,6 +72,8 @@ LIVE_THRESHOLDS = Thresholds(
     maturity_hours=336,
     breakout_multiplier=2,
     buyer_window_hours=0,
+    min_score=5,
+    max_multiplier=10_000,
 )
 
 

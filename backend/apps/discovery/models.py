@@ -22,6 +22,8 @@ THRESHOLD_FIELDS = (
     "maturity_hours",
     "breakout_multiplier",
     "buyer_window_hours",
+    "min_score",
+    "max_multiplier",
 )
 CLOSED_STATUSES = ("rejected", "buyers_extracted")
 UINT256_DIGITS = 78
@@ -108,6 +110,20 @@ class DetectionSettings(models.Model):
     buyer_window_hours = models.PositiveIntegerField(
         null=True, blank=True, help_text="Heures d'achat avant le creux. 0 = depuis le lancement."
     )
+    min_score = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Score minimum (multiplicateur × maturité) : écarte les pumps de lancement.",
+    )
+    max_multiplier = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Au-delà, la vague est une anomalie (pool vidé, prix ~0). 0 = pas de plafond.",
+    )
 
     class Meta:
         verbose_name = "réglages de détection"
@@ -147,7 +163,7 @@ class PipelineSettings(models.Model):
     trending_pages = models.PositiveSmallIntegerField(default=10)
     volume_pages_per_chain = models.PositiveSmallIntegerField(default=3)
     candidate_cooldown_hours = models.PositiveIntegerField(default=72)
-    max_transfers_per_token = models.PositiveIntegerField(default=500_000)
+    max_transfers_per_token = models.PositiveIntegerField(default=2_000_000)
     max_attempts = models.PositiveSmallIntegerField(default=3)
     gecko_requests_per_min = models.PositiveIntegerField(default=30)
     hypersync_requests_per_min = models.PositiveIntegerField(default=60)

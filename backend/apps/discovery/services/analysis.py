@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from apps.discovery.models import Candidate, Chain, Explosion, Token
-from apps.discovery.services.blocks import find_block_at
+from apps.discovery.services.blocks import find_block_near
 from apps.discovery.services.candidates import SOURCE_MANUAL, upsert_token_and_pools
 from apps.discovery.services.explosion import (
     REJECTED,
@@ -94,14 +94,14 @@ def analyze_candidate(
 
     hypersync = hypersync_for(chain)
     height = hypersync.height()
-    trough_block = find_block_at(wave.trough.ts, 0, height, hypersync.block_timestamp)
-    peak_block = find_block_at(wave.peak.ts, trough_block, height, hypersync.block_timestamp)
+    trough_block = find_block_near(wave.trough.ts, height, hypersync.block_timestamp)
+    peak_block = find_block_near(wave.peak.ts, height, hypersync.block_timestamp)
     created_by_address = {pool.address: pool.created_at for pool in history.pools}
     for pool in token.pools.filter(created_block__isnull=True):
         created_at = created_by_address.get(pool.address)
         if created_at is not None:
-            pool.created_block = find_block_at(
-                int(created_at.timestamp()), 0, trough_block, hypersync.block_timestamp
+            pool.created_block = find_block_near(
+                int(created_at.timestamp()), height, hypersync.block_timestamp
             )
             pool.save(update_fields=["created_block"])
 
