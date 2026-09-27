@@ -21,7 +21,9 @@
 | Wallet qui achète lui-même | 79 | 60 | 1,1 M$ |
 | Wallet qui n'achète jamais (coffre) | 59 | 53 | 677 k$ |
 
-49 coffres dépasseraient le seuil du top 300. Exemple d'entité : `0x4d75b19b…` reçoit de trois acheteurs, dont `0x000461…c111` et `0x00034187…e111` (adresses générées par la même personne).
+49 coffres dépasseraient le seuil du top 300.
+
+**Bots.** `0x4d75b19b…` reçoit de trois acheteurs, dont `0x000461…c111` et `0x00034187…e111` (adresses « vanity » en `0x000…`, typiques des bots). `0x000461…c111` signe 128 transactions en 24 h, 135/jour sur 7 jours, 182/jour sur 30 jours (seuil `max_txs_per_day` = 50) : c'est un bot, et `0x4d75…` son collecteur. Aujourd'hui le filtre bot n'existe qu'à la qualification : un bot peut occuper une place du top et, avec les entités, former une entité avec son collecteur.
 
 ## Décisions
 
@@ -34,6 +36,7 @@
 | Coffre qui achète lui-même | Rattaché à l'entité ; garde ses achats, hérite du prix de revient seulement pour la part reçue |
 | Pendant la montée | Les coffres découverts sont suivis (passe filtrée), jusqu'à `vault_follow_depth` niveaux |
 | Qualification | Liens → entités, mouvements internes marqués, valeur d'entité ; filtres et tags restent par wallet (spec scoring suivante) |
+| Bots | **Filtrés dès la découverte**, avant le classement, sur l'activité des 7 jours précédant le creux (`max_txs_per_day`) ; un bot ne forme pas d'entité |
 | Couche brute | `TokenInfo` (Zerion `/fungibles`), `TokenTransfer` (on-chain), photo de portefeuille par token, `deposit`/`withdraw` récupérés ; filtre anti-spam Zerion conservé ; pas de bougies |
 
 ## Classement d'un destinataire (fonction pure)
@@ -47,6 +50,18 @@ Entrée : les transferts du token lus en passe 1 (et en passe entité), les pool
 5. Sinon → **coffre** : transfert d'entité.
 
 Un envoi est « gros » s'il représente au moins `transfer_after_buy_pct` % de la position de l'expéditeur au moment de l'envoi. Les petits envois vers un coffre restent des sorties (ils réduisent la position sans créer de lien).
+
+## Filtre bot (découverte)
+
+Après la passe 1, les candidats sont vérifiés **du plus gros au plus petit** (position de l'entité au creux) jusqu'à remplir `max_buyers` entités :
+
+- pour chaque wallet d'une entité candidate : nombre de transactions signées (HyperSync, `wallet_tx_count`) entre `creux − bot_window_days` et le creux ;
+- au-delà de `max_txs_per_day` × `bot_window_days` → **bot** : le wallet est écarté (raison `bot` conservée) ;
+- un bot **ne forme pas d'entité** : ses envois sont des sorties, son destinataire n'hérite de rien ; les liens partant d'un bot ne sont pas créés ;
+- un wallet d'entité qui a reçu des tokens d'un bot est marqué `bot_funded` (indice affiché, sans exclusion automatique) ;
+- une entité dont tous les wallets sont des bots est écartée ; sinon on retire les bots et on recalcule sa position.
+
+Le seuil réutilise `max_txs_per_day` (réglage de qualification, valeur globale) ; `bot_window_days` (7) est un réglage de détection. Les résultats sont mis en cache Redis par (chaîne, wallet, jour du creux) pour ne pas recompter.
 
 ## Position au creux et héritage (fonction pure)
 
@@ -67,7 +82,7 @@ Position au creux = quantité restante × prix du creux. Les chaînes A → B �
 
 ## Extraction (découverte)
 
-**Passe 1 — scan complet** (fenêtre d'achat → creux, page par page) : achats par signataire ; envois vers les pools ; totaux par couple (expéditeur, destinataire) pour les autres envois ; nombre d'expéditeurs distincts par destinataire (plafonné à `hub_min_senders`) ; envois des adresses ayant reçu un envoi (pour détecter les dépôts). En fin de passe : classement des destinataires, positions au creux avec héritage, formation des entités, classement des **entités** par position totale au creux, top `max_buyers` (entités) au-dessus de `min_buy_usd`.
+**Passe 1 — scan complet** (fenêtre d'achat → creux, page par page) : achats par signataire ; envois vers les pools ; totaux par couple (expéditeur, destinataire) pour les autres envois ; nombre d'expéditeurs distincts par destinataire (plafonné à `hub_min_senders`) ; envois des adresses ayant reçu un envoi (pour détecter les dépôts). En fin de passe : classement des destinataires, positions au creux avec héritage, formation des entités, classement des **entités** par position totale au creux, **filtre bot** (section dédiée) en remplissant le top `max_buyers` (entités) au-dessus de `min_buy_usd`.
 
 **Passe entité — filtrée** (fenêtre d'achat → pic) : transferts dont l'expéditeur **ou** le destinataire est un wallet d'une entité retenue (par lots de `sell_pass_batch_size` adresses). Enregistre les `TokenTransfer`, calcule le % revendu pendant la montée par entité, ajoute les nouveaux coffres découverts pendant la montée et relance la passe sur eux, jusqu'à `vault_follow_depth`.
 
@@ -94,11 +109,12 @@ Position au creux = quantité restante × prix du creux. Les chaînes A → B �
 - `Entity` : `created_at`, `updated_at`, `merged_into` (nullable).
 - `Wallet.entity` (FK nullable).
 - `WalletLink` : + `source` (`hypersync` / `zerion`), + `rejected` (bool), + type `TRANSFER_TO_VAULT`.
-- `EarlyBuyer` : + `entity`, + `inherited_amount`, + `inherited_usd`, + `inherited_from` (FK Wallet nullable).
+- `EarlyBuyer` : + `entity`, + `inherited_amount`, + `inherited_usd`, + `inherited_from` (FK Wallet nullable), + `bot_funded` (bool).
+- `ExcludedBuyer` : `explosion`, `wallet`, `reason` (`bot`), `txs_per_day`, `held_usd` — trace des candidats écartés, pour contrôle.
 - `EntityEarlyBuy` : `entity`, `explosion`, `held_usd`, `held_amount`, `first_buy_at`, `sold_during_rise_pct`, `rank` ; unique (entité, explosion).
 - `TokenTransfer`, `TokenInfo`, `PortfolioSnapshot`, `PortfolioPosition` (ci-dessus).
 - `TokenTrade` : + `is_internal`.
-- Réglages : `DetectionSettings` + `hub_min_senders` (10), `vault_follow_depth` (2) ; `PipelineSettings` + `zerion_operation_types`, `token_info_refresh_days` (30) ; réutilisés : `transfer_after_buy_pct`, `deposit_forward_pct`, `deposit_forward_hours` (`QualificationSettings`, valeurs globales).
+- Réglages : `DetectionSettings` + `hub_min_senders` (10), `vault_follow_depth` (2), `bot_window_days` (7) ; `PipelineSettings` + `zerion_operation_types`, `token_info_refresh_days` (30) ; réutilisés : `transfer_after_buy_pct`, `deposit_forward_pct`, `deposit_forward_hours` (`QualificationSettings`, valeurs globales).
 
 ## Admin
 
@@ -106,18 +122,19 @@ Page **Entités** : wallets, liens avec preuves (source, hash, %), early buys pa
 
 ## Tests
 
-- **Purs** : classement des destinataires (pool, hub, dépôt, exchange connu, coffre dont smart wallet peu alimenté) ; positions avec héritage A → B → C et prix de revient au prorata ; petits envois = sorties ; union et fusion d'entités ; classement par entité (4 wallets = 1 place).
+- **Purs** : classement des destinataires (pool, hub, dépôt, exchange connu, coffre dont smart wallet peu alimenté) ; positions avec héritage A → B → C et prix de revient au prorata ; petits envois = sorties ; union et fusion d'entités ; classement par entité (4 wallets = 1 place) ; un bot est écarté et remplacé par le suivant ; un bot ne crée pas d'entité ; `bot_funded`.
 - **Extraction** (faux HyperSync) : un coffre entre dans le top par héritage ; suivi pendant la montée jusqu'à la profondeur ; dépôt reclassé en sortie ; `TokenTransfer` enregistrés.
 - **Qualification** : liens Zerion → entités ; `is_internal` ; positions sans mouvements internes ; valeur d'entité ; priorité par entité ; détacher un wallet.
 - **Couche brute** : `TokenInfo` par lots et rafraîchissement ; photo de portefeuille par token.
-- **Live (AI)** : `0x4d75…` forme une entité avec `0x000461…c111` et `0x00034187…e111` ; `0x44df…` reste dans le top ; nombre de coffres entrés proche de 49.
+- **Live (AI)** : `0x000461…c111` est écarté comme bot et `0x4d75…` n'hérite pas de ses tokens ; `0x44df…` reste dans le top ; nombre de coffres entrés proche de 49.
 
 ## Critères de réussite
 
 1. Sur AI, les coffres mesurés sont rattachés à leur entité et l'entité est classée sur sa position totale.
 2. Un transfert interne ne crée ni achat ni vente, et le prix de revient suit la quantité.
-3. Les données brutes (transferts on-chain retenus, métadonnées de tokens, portefeuille par token) sont stockées et rejouables.
-4. `make test` et `make lint` passent.
+3. Aucun bot (au-delà de `max_txs_per_day` sur les 7 jours précédant le creux) n'occupe une place du top, et aucun bot ne forme d'entité.
+4. Les données brutes (transferts on-chain retenus, métadonnées de tokens, portefeuille par token) sont stockées et rejouables.
+5. `make test` et `make lint` passent.
 
 ## Hors périmètre
 
