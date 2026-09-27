@@ -1,6 +1,8 @@
 """Fabriques de test de la qualification."""
 
+from apps.discovery.models import Candidate, EarlyBuyer, Explosion, Token
 from apps.wallets.services.settings import QualificationThresholds
+from apps.wallets.tests.fakes import NOW
 
 DEFAULT_THRESHOLDS = dict(
     max_txs_per_day=200,
@@ -31,3 +33,27 @@ DEFAULT_THRESHOLDS = dict(
 
 def make_thresholds(**overrides) -> QualificationThresholds:
     return QualificationThresholds(**{**DEFAULT_THRESHOLDS, **overrides})
+
+
+def make_early_buy(wallet, chain, token_address, is_sniper=False, bought=100, sold=0) -> EarlyBuyer:
+    token, _ = Token.objects.get_or_create(chain=chain, address=token_address)
+    candidate = Candidate.objects.create(token=token, status="buyers_extracted")
+    explosion = Explosion.objects.create(
+        candidate=candidate,
+        low_block=1,
+        low_at=NOW,
+        peak_block=2,
+        peak_at=NOW,
+        multiplier=10,
+        retention_pct=50,
+    )
+    return EarlyBuyer.objects.create(
+        explosion=explosion,
+        wallet=wallet,
+        first_buy_block=1,
+        first_buy_at=NOW,
+        bought_amount=bought,
+        bought_usd=1000,
+        sold_amount=sold,
+        is_sniper=is_sniper,
+    )

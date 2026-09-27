@@ -7,10 +7,25 @@ from decimal import Decimal
 
 from django.db import transaction
 
-from apps.discovery.models import Chain, Token
+from apps.discovery.models import Chain, EarlyBuyer, Token
 from apps.discovery.services.blocks import find_block_at
-from apps.wallets.models import KnownAddress, TokenPosition, TokenTrade, WalletProfile
+from apps.wallets.models import (
+    Entity,
+    KnownAddress,
+    TokenPosition,
+    TokenTrade,
+    WalletLink,
+    WalletProfile,
+)
 from apps.wallets.services.classify import Trade, classify_all
+from apps.wallets.services.entities import (
+    add_link,
+    follow,
+    funder_is_service,
+    refresh_entity,
+    transfer_after_buy_targets,
+)
+from apps.wallets.services.exchanges import detect_exchange
 from apps.wallets.services.filters import (
     ChainActivity,
     farmer_reason,
@@ -23,8 +38,10 @@ from apps.wallets.services.pricing import (
     price_trades,
     quote_assets,
     quote_tokens,
+    wallet_value,
 )
 from apps.wallets.services.settings import qualification_thresholds
+from apps.wallets.services.tags import EarlyBuy, entity_tags, wallet_tags
 
 Status = WalletProfile.Status
 BATCH_SIZE = 1000
@@ -210,4 +227,136 @@ def history_step(profile: WalletProfile, clients: Clients, now: datetime) -> str
         return filter_out(profile, reason, now)
     profile.status = Status.HISTORY_FETCHED
     profile.save(update_fields=["status", "metrics"])
+    return profile.status
+
+
+PORTFOLIO_REASONS = ("portfolio_too_small", "portfolio_too_large")
+
+
+def link_step(profile: WalletProfile, clients: Clients, now: datetime) -> None:
+    t = qualification_thresholds()
+    wallet = profile.wallet
+    chains = {chain.pk: chain for chain in profile_chains(profile)}
+    contexts: dict[int, tuple] = {}
+
+    def context(chain):
+        if chain.pk not in contexts:
+            hypersync = clients.hypersync_for(chain)
+            contexts[chain.pk] = (hypersync, hypersync.height())
+        return contexts[chain.pk]
+
+    targets = transfer_after_buy_targets(records_for(wallet), t.transfer_after_buy_pct)
+    for (chain_id, destination), evidence in targets.items():
+        chain = chains.get(chain_id)
+        if chain is None:
+            continue
+        hypersync, height = context(chain)
+        if detect_exchange(destination, chain, hypersync, t, now, height):
+            continue
+        add_link(
+            wallet.address,
+            destination,
+            WalletLink.Kind.TRANSFER_AFTER_BUY,
+            {**evidence, "chain": chain.gt_id},
+        )
+        follow(destination, profile, chain, t)
+
+    for chain in chains.values():
+        hypersync, height = context(chain)
+        funding = hypersync.first_funding(wallet.address, height)
+        if funding is None:
+            continue
+        if funder_is_service(funding.funder, chain, t) or detect_exchange(
+            funding.funder, chain, hypersync, t, now, height
+        ):
+            continue
+        add_link(
+            funding.funder,
+            wallet.address,
+            WalletLink.Kind.FUNDING,
+            {"chain": chain.gt_id, "block": funding.block, "value": str(funding.value)},
+        )
+        follow(funding.funder, profile, chain, t)
+
+
+def early_buys(wallet) -> list[EarlyBuy]:
+    return [
+        EarlyBuy(
+            token=e.explosion.candidate.token.address,
+            chain_id=e.explosion.candidate.token.chain_id,
+            is_sniper=e.is_sniper,
+            bought=int(e.bought_amount),
+            sold_before_peak=int(e.sold_amount),
+        )
+        for e in EarlyBuyer.objects.filter(wallet=wallet).select_related(
+            "explosion__candidate__token"
+        )
+    ]
+
+
+def evaluate_entity(entity: Entity) -> None:
+    """Valeur et tags de l'entité, puis statut de ses wallets déjà valorisés."""
+    t = qualification_thresholds()
+    profiles = list(entity.profiles.all())
+    value = sum(float(p.portfolio_value_usd) for p in profiles if p.portfolio_value_usd is not None)
+    members = {p.wallet_id for p in profiles}
+    explosive = list(
+        EarlyBuyer.objects.filter(wallet_id__in=members).values_list(
+            "explosion__candidate__token__address", flat=True
+        )
+    )
+    internal_holding = WalletLink.objects.filter(
+        kind=WalletLink.Kind.TRANSFER_AFTER_BUY,
+        from_wallet_id__in=members,
+        to_wallet_id__in=members,
+        evidence__token__in=explosive,
+    ).exists()
+    entity.portfolio_value_usd = Decimal(str(round(value, 2)))
+    entity.tags = entity_tags([p.tags for p in profiles], internal_holding)
+    entity.save()
+
+    if value < t.min_portfolio_usd:
+        status, reason = Status.FILTERED, "portfolio_too_small"
+    elif value > t.max_portfolio_usd:
+        status, reason = Status.FILTERED, "portfolio_too_large"
+    else:
+        status, reason = Status.QUALIFIED, ""
+    for p in profiles:
+        judged = p.portfolio_value_usd is not None and (
+            p.status in (Status.HISTORY_FETCHED, Status.QUALIFIED)
+            or (p.status == Status.FILTERED and p.filter_reason in PORTFOLIO_REASONS)
+        )
+        if judged and (p.status, p.filter_reason) != (status, reason):
+            p.status = status
+            p.filter_reason = reason
+            p.save(update_fields=["status", "filter_reason"])
+
+
+def complete_step(profile: WalletProfile, clients: Clients, now: datetime) -> str:
+    link_step(profile, clients, now)
+    chains = profile_chains(profile)
+    total, details = wallet_value(profile.wallet, chains, clients.zerion, clients.rpc_for, now)
+    profile.portfolio_value_usd = Decimal(str(total))
+    profile.metrics = {**profile.metrics, "value": details}
+    profile.tags = wallet_tags(
+        records_for(profile.wallet),
+        early_buys(profile.wallet),
+        quote_tokens(chains),
+        qualification_thresholds(),
+    )
+    profile.analyzed_at = now
+    profile.attempts = 0
+    profile.save()
+    evaluate_entity(refresh_entity(profile.wallet))
+    profile.refresh_from_db()
+    return profile.status
+
+
+def qualify_wallet(profile: WalletProfile, clients: Clients, now: datetime) -> str:
+    if profile.status == Status.PENDING:
+        prefilter_step(profile, clients, now)
+    if profile.status == Status.PREFILTERED:
+        history_step(profile, clients, now)
+    if profile.status == Status.HISTORY_FETCHED:
+        complete_step(profile, clients, now)
     return profile.status
