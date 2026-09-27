@@ -21,20 +21,15 @@ from apps.discovery.models import (
     ExcludedBuyer,
     Explosion,
     PipelineSettings,
-    TokenTransfer,
     Wallet,
 )
 from apps.discovery.services.analysis import fetch_price_history, reject
 from apps.discovery.services.blocks import find_block_at, find_block_near
 from apps.discovery.services.entity_buys import refresh_entity_buys
 from apps.discovery.services.flows import (
-    DEPOSIT,
-    KNOWN,
-    EntityPass,
     FlowScanner,
     Selection,
     classify_recipients,
-    hubs,
     select_entities,
 )
 from apps.discovery.services.settings import Thresholds, thresholds_for
@@ -175,63 +170,15 @@ def extract_buyers(
         time.monotonic() - started,
     )
 
-    group_of = {w: i for i, c in enumerate(selection.selected) for w in c.wallets}
-    tracker = EntityPass(
-        group_of=group_of,
-        held={w: h.held for w, h in selection.flows.holders.items() if w in group_of},
-        trough_block=explosion.trough_block,
-        pools=scanner.pools,
-        exits=hubs(scanner) | {r for r, k in kinds.items() if k in (DEPOSIT, KNOWN)},
-        big_pct=thresholds.vault_min_pct,
-        max_depth=thresholds.vault_follow_depth,
-    )
-    # Avant le creux, la passe 1 sait déjà tout. Pendant la montée, on relit tous les transferts
-    # du token et on filtre ici : bien plus rapide que le filtre par adresses de HyperSync.
-    started, pages = time.monotonic(), 0
-    logger.info(
-        "%s passe entité : %s wallets, blocs %s → %s",
-        label,
-        len(group_of),
-        explosion.trough_block + 1,
-        explosion.peak_block,
-    )
-    for page in hypersync.transfer_pages(
-        token.address, explosion.trough_block + 1, explosion.peak_block + 1
-    ):
-        tracker.add(page)
-        pages += 1
-        if pages % LOG_EVERY_PAGES == 0:
-            logger.info(
-                "%s passe entité : %s pages, %s transferts retenus, %.0fs",
-                label,
-                pages,
-                len(tracker.rows),
-                time.monotonic() - started,
-            )
-    rise_vaults = tracker.take_new_vaults()
-    logger.info(
-        "%s passe entité terminée : %s pages, %s coffres pendant la montée, %.0fs",
-        label,
-        pages,
-        len(rise_vaults),
-        time.monotonic() - started,
-    )
-
+    # Après le creux (ventes, nouveaux coffres), l'historique Zerion de la qualification prend
+    # le relais : relire la montée ici coûte des millions de transferts pour peu d'information.
+    members = sorted({w for candidate in selection.selected for w in candidate.wallets})
     started = time.monotonic()
     with transaction.atomic():
-        _save_links(token, selection, tracker, rise_vaults)
+        _save_links(token, selection, members)
         _save_buyers(
-            explosion,
-            selection,
-            tracker,
-            rise_vaults,
-            scanner,
-            first_block,
-            thresholds,
-            trough_price,
-            scale,
+            explosion, selection, members, scanner, first_block, thresholds, trough_price, scale
         )
-        _save_raw(explosion, token, selection, tracker)
         explosion.extraction_status = status
         explosion.save(update_fields=["extraction_status"])
         candidate.status = Candidate.Status.BUYERS_EXTRACTED
@@ -240,10 +187,11 @@ def extract_buyers(
     return len(selection.selected)
 
 
-def _save_links(token, selection: Selection, tracker: EntityPass, rise_vaults) -> None:
+def _save_links(token, selection: Selection, members: list[str]) -> None:
+    retained = set(members)
     base = {"chain": token.chain.gt_id, "token": token.address}
     for link in selection.flows.links:
-        if link.sender in tracker.group_of:
+        if link.sender in retained:
             entity_graph.link(
                 link.sender,
                 link.recipient,
@@ -257,77 +205,35 @@ def _save_links(token, selection: Selection, tracker: EntityPass, rise_vaults) -
                     "tx": link.tx_hash,
                 },
             )
-    for vault, info in rise_vaults.items():
-        entity_graph.link(
-            info.sender,
-            vault,
-            WalletLink.Kind.TRANSFER_TO_VAULT,
-            WalletLink.LinkSource.HYPERSYNC,
-            {
-                **base,
-                "amount": str(info.amount),
-                "block": info.block,
-                "tx": info.tx_hash,
-                "during_rise": True,
-            },
-        )
 
 
 def _save_buyers(
-    explosion,
-    selection,
-    tracker,
-    rise_vaults,
-    scanner,
-    first_block,
-    thresholds,
-    trough_price,
-    scale,
+    explosion, selection, members, scanner, first_block, thresholds, trough_price, scale
 ) -> None:
     holders = selection.flows.holders
-    members = sorted(tracker.group_of)
     Wallet.objects.bulk_create([Wallet(address=a) for a in members], ignore_conflicts=True)
     wallets = {w.address: w for w in Wallet.objects.filter(address__in=members)}
     for wallet in wallets.values():
         entity_graph.ensure_entity(wallet)
 
-    def first_buy(address: str) -> tuple[int, int]:
-        holder = holders.get(address)
-        if holder and holder.first_block:
-            return holder.first_block, holder.first_ts
-        if address in rise_vaults:
-            return first_buy(rise_vaults[address].sender)
-        return explosion.trough_block, int(explosion.trough_at.timestamp())
-
     rows = []
     for address in members:
-        holder = holders.get(address)
-        block, ts = first_buy(address)
+        holder = holders[address]
         own = scanner.first_buy.get(address)
-        if holder is not None:
-            held, inherited = holder.held, holder.inherited
-            bought, cost, inherited_cost = holder.bought, holder.cost, holder.inherited_cost
-            source = holder.inherited_from
-        else:
-            # Coffre découvert pendant la montée : rien au creux (déjà compté chez l'expéditeur).
-            info = rise_vaults[address]
-            held, inherited, bought, cost, inherited_cost = 0, info.amount, 0, 0.0, 0.0
-            source = info.sender
         rows.append(
             EarlyBuyer(
                 explosion=explosion,
                 wallet=wallets[address],
                 entity_id=wallets[address].entity_id,
-                first_buy_block=block,
-                first_buy_at=_at(ts),
-                bought_amount=Decimal(bought),
-                bought_usd=_usd(cost),
-                held_amount=Decimal(held),
-                held_usd=_usd(held / scale * trough_price),
-                inherited_amount=Decimal(inherited),
-                inherited_usd=_usd(inherited_cost),
-                inherited_from=wallets.get(source),
-                sold_amount=Decimal(tracker.sold_rise.get(address, 0)),
+                first_buy_block=holder.first_block or explosion.trough_block,
+                first_buy_at=_at(holder.first_ts or int(explosion.trough_at.timestamp())),
+                bought_amount=Decimal(holder.bought),
+                bought_usd=_usd(holder.cost),
+                held_amount=Decimal(holder.held),
+                held_usd=_usd(holder.held / scale * trough_price),
+                inherited_amount=Decimal(holder.inherited),
+                inherited_usd=_usd(holder.inherited_cost),
+                inherited_from=wallets.get(holder.inherited_from),
                 is_sniper=own is not None and own[0] - first_block <= thresholds.sniper_blocks,
             )
         )
@@ -354,27 +260,4 @@ def _save_buyers(
             for address, (per_day, usd) in bots.items()
         ],
         ignore_conflicts=True,
-    )
-
-
-def _save_raw(explosion, token, selection, tracker: EntityPass) -> None:
-    TokenTransfer.objects.bulk_create(
-        [
-            TokenTransfer(
-                explosion=explosion,
-                token=token,
-                tx_hash=t.tx_hash,
-                log_index=t.log_index,
-                block=t.block,
-                at=_at(t.timestamp),
-                tx_from=t.tx_from,
-                sender=t.sender,
-                recipient=t.recipient,
-                amount=Decimal(t.amount),
-                kind=kind,
-            )
-            for t, kind in tracker.rows
-        ],
-        ignore_conflicts=True,
-        batch_size=BATCH_SIZE,
     )

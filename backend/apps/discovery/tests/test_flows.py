@@ -5,7 +5,6 @@ from apps.discovery.services.flows import (
     HUB,
     VAULT,
     ZERO_ADDRESS,
-    EntityPass,
     FlowScanner,
     classify_recipients,
     group_entities,
@@ -166,48 +165,3 @@ def test_bot_checks_are_batched():
 
     select(scanner, check, batch=2, max_entities=3)
     assert batches == [[A, B], [C]]
-
-
-def test_entity_pass_counts_rise_sells_and_finds_new_vault():
-    tracker = EntityPass(
-        group_of={A: 0},
-        held={A: 1000 * UNIT},
-        trough_block=10,
-        pools={POOL},
-        exits={H},
-        big_pct=20,
-    )
-    tracker.add([buy(5, A, 1000), send(11, A, POOL, 100), send(12, A, H, 50), send(13, A, B, 500)])
-    assert tracker.sold_rise[A] == 150 * UNIT
-    assert [kind for _, kind in tracker.rows] == ["buy", "sell", "exit", "vault"]
-    new = tracker.take_new_vaults()
-    assert list(new) == [B] and new[B].sender == A
-    tracker.add([send(14, B, POOL, 200), send(15, A, B, 10)])
-    assert tracker.sold_rise[B] == 200 * UNIT
-    assert tracker.rows[-1][1] == "internal"
-
-
-def test_entity_pass_ignores_duplicates():
-    tracker = EntityPass(
-        group_of={A: 0}, held={A: UNIT}, trough_block=10, pools={POOL}, exits=set(), big_pct=20
-    )
-    transfer = buy(5, A, 1)
-    tracker.add([transfer])
-    tracker.add([transfer])
-    assert len(tracker.rows) == 1
-
-
-def test_entity_pass_follows_vaults_up_to_max_depth():
-    tracker = EntityPass(
-        group_of={A: 0},
-        held={A: 1000 * UNIT},
-        trough_block=10,
-        pools={POOL},
-        exits=set(),
-        big_pct=20,
-        max_depth=1,
-    )
-    tracker.add([send(11, A, B, 800), send(12, B, C, 800), send(13, B, POOL, 0)])
-    assert [kind for _, kind in tracker.rows] == ["vault", "exit", "sell"]
-    assert list(tracker.take_new_vaults()) == [B]
-    assert tracker.sold_rise[B] == 800 * UNIT

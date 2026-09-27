@@ -10,7 +10,6 @@ from apps.discovery.models import (
     ExcludedBuyer,
     Explosion,
     PipelineSettings,
-    TokenTransfer,
     Wallet,
 )
 from apps.discovery.services.analysis import analyze_candidate
@@ -67,7 +66,6 @@ def test_stores_significant_eoa_buyers(confirmed):
     # Valorisées au prix du creux (0,5 $) : 1 000 tokens → 500 $, 2 000 → 1 000 $.
     assert (alice.held_amount, alice.held_usd) == (Decimal(1000 * UNIT), Decimal("500.00"))
     assert buyers[SNIPER].held_usd == Decimal("1000.00")
-    assert alice.sold_amount == Decimal(400 * UNIT)
     assert not alice.is_sniper
     assert buyers[SNIPER].is_sniper
     assert buyers[SNIPER].bought_usd == Decimal("2000.00")
@@ -75,16 +73,11 @@ def test_stores_significant_eoa_buyers(confirmed):
     assert EntityEarlyBuy.objects.count() == 2
 
 
-def test_scan_then_entity_pass_on_retained_wallets(confirmed):
+def test_single_scan_up_to_trough(confirmed):
     hypersync = FakeHyperSync()
     extract(confirmed, hypersync)
     explosion = confirmed.explosion
-    first, *rest = hypersync.transfer_calls
-    assert first == (TOKEN, 500, explosion.trough_block + 1, None, None)
-    assert [call[1:] for call in rest] == [
-        (explosion.trough_block + 1, explosion.peak_block + 1, None, None)
-    ]
-    assert TokenTransfer.objects.filter(explosion=explosion, kind="sell").count() == 1
+    assert hypersync.transfer_calls == [(TOKEN, 500, explosion.trough_block + 1, None, None)]
     explosion.refresh_from_db()
     assert explosion.extraction_status == Explosion.Extraction.COMPLETE
 
