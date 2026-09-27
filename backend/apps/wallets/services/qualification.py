@@ -10,6 +10,7 @@ from django.db.models import Max
 
 from apps.discovery.models import Chain, EarlyBuyer
 from apps.wallets.models import (
+    STRONG_LINKS,
     KnownAddress,
     TokenPosition,
     TokenTrade,
@@ -18,7 +19,7 @@ from apps.wallets.models import (
     WalletTransaction,
 )
 from apps.wallets.services.blocks import block_at
-from apps.wallets.services.classify import classify_all
+from apps.wallets.services.classify import BUY, RECEIVE, classify_all
 from apps.wallets.services.entities import (
     ZERO_ADDRESS,
     add_link,
@@ -27,10 +28,16 @@ from apps.wallets.services.entities import (
     transfer_after_buy_targets,
 )
 from apps.wallets.services.exchanges import detect_exchange
-from apps.wallets.services.filters import farmer_reason, mev_ratio, prefilter_reason
+from apps.wallets.services.filters import (
+    farmer_reason,
+    history_reason,
+    mev_ratio,
+    prefilter_reason,
+)
 from apps.wallets.services.positions import TradeRecord, aggregate_positions
 from apps.wallets.services.settings import qualification_thresholds
-from apps.wallets.services.zerion_history import counterparty, movements
+from apps.wallets.services.tags import EarlyBuy, wallet_tags
+from apps.wallets.services.zerion_history import counterparty, is_quote, movements
 
 Status = WalletProfile.Status
 Source = WalletProfile.Source
@@ -324,3 +331,112 @@ def link_step(profile: WalletProfile, clients: Clients, now: datetime, records) 
                 WalletLink.Kind.FUNDING,
                 {"chain": chain.gt_id, "block": funding.block, "value": str(funding.value)},
             )
+
+
+PORTFOLIO_REASONS = ("portfolio_too_small", "portfolio_too_large")
+
+
+def quote_tokens(wallet, cfg) -> set[str]:
+    pairs = (
+        TokenTrade.objects.filter(wallet=wallet)
+        .values_list("token_symbol", "token_address")
+        .distinct()
+    )
+    return {address for symbol, address in pairs if is_quote(symbol, address, cfg.quote_symbols)}
+
+
+def early_buys(wallet) -> list[EarlyBuy]:
+    return [
+        EarlyBuy(
+            token=e.explosion.candidate.token.address,
+            chain_id=e.explosion.candidate.token.chain.zerion_id,
+            is_sniper=e.is_sniper,
+            bought=int(e.bought_amount),
+            sold_before_peak=int(e.sold_amount),
+        )
+        for e in EarlyBuyer.objects.filter(wallet=wallet).select_related(
+            "explosion__candidate__token__chain"
+        )
+    ]
+
+
+def linked_profiles(wallet):
+    outgoing = WalletLink.objects.filter(kind__in=STRONG_LINKS, from_wallet=wallet).values_list(
+        "to_wallet_id", flat=True
+    )
+    incoming = WalletLink.objects.filter(kind__in=STRONG_LINKS, to_wallet=wallet).values_list(
+        "from_wallet_id", flat=True
+    )
+    return WalletProfile.objects.filter(wallet_id__in=set(outgoing) | set(incoming))
+
+
+def evaluate_wallet(profile: WalletProfile) -> str:
+    """Valeur jugée = portefeuille du wallet + portefeuilles de ses wallets liés directs."""
+    if profile.source != Source.EARLY_BUYER or profile.portfolio_value_usd is None:
+        return profile.status
+    judged = profile.status in (Status.HISTORY_FETCHED, Status.QUALIFIED) or (
+        profile.status == Status.FILTERED and profile.filter_reason in PORTFOLIO_REASONS
+    )
+    if not judged:
+        return profile.status
+    t = qualification_thresholds()
+    linked = sum(
+        (
+            p.portfolio_value_usd
+            for p in linked_profiles(profile.wallet)
+            if p.portfolio_value_usd is not None
+        ),
+        Decimal(0),
+    )
+    total = profile.portfolio_value_usd + linked
+    if total < Decimal(str(t.min_portfolio_usd)):
+        status, reason = Status.FILTERED, "portfolio_too_small"
+    elif total > Decimal(str(t.max_portfolio_usd)):
+        status, reason = Status.FILTERED, "portfolio_too_large"
+    else:
+        status, reason = Status.QUALIFIED, ""
+    profile.linked_value_usd = linked
+    profile.status = status
+    profile.filter_reason = reason
+    profile.save(update_fields=["linked_value_usd", "status", "filter_reason"])
+    return profile.status
+
+
+def decide_step(profile: WalletProfile, clients: Clients, now: datetime, cfg) -> str:
+    """Sur historique complet : filtres Zerion, liens, valeur, tags, puis décision."""
+    t = qualification_thresholds()
+    wallet = profile.wallet
+    records = records_for(wallet)
+    quotes = quote_tokens(wallet, cfg)
+    distinct_in = len({(r.chain_id, r.token) for r in records if r.kind in (BUY, RECEIVE)})
+    reason = farmer_reason(distinct_in, t) or history_reason(records, quotes, t, profile.source)
+    if reason:
+        return filter_out(profile, reason, now)
+    link_step(profile, clients, now, records)
+    portfolio = clients.zerion.portfolio(wallet.address)
+    profile.portfolio_value_usd = _usd(portfolio.total_usd)
+    profile.metrics = {
+        **profile.metrics,
+        "portfolio_by_chain": {k: round(v, 2) for k, v in portfolio.by_chain.items()},
+    }
+    profile.tags = wallet_tags(records, early_buys(wallet), quotes, t)
+    profile.analyzed_at = now
+    profile.attempts = 0
+    profile.save()
+    return evaluate_wallet(profile)
+
+
+def value_linked_step(profile: WalletProfile, clients: Clients, now: datetime) -> str:
+    """Wallet lié : 1 appel /portfolio, puis réévaluation des wallets qui lui sont liés."""
+    portfolio = clients.zerion.portfolio(profile.wallet.address)
+    profile.portfolio_value_usd = _usd(portfolio.total_usd)
+    profile.metrics = {
+        **profile.metrics,
+        "portfolio_by_chain": {k: round(v, 2) for k, v in portfolio.by_chain.items()},
+    }
+    profile.status = Status.VALUED
+    profile.analyzed_at = now
+    profile.save()
+    for other in linked_profiles(profile.wallet):
+        evaluate_wallet(other)
+    return profile.status
