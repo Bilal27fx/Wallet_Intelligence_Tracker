@@ -31,9 +31,10 @@ Mesure faite sur 4 vrais wallets : l'historique Zerion (`/wallets/{address}/tran
 | Valeur | Soldes reconstruits + solde natif RPC | **Zerion `/portfolio`** (toutes chaînes, 1 appel) du wallet **+ de ses wallets liés directs** |
 | Ordre de traitement | Ancienneté | **Meilleurs signaux d'abord** (nombre d'explosions, montant de l'early buy) |
 | Quota Zerion | 250/jour | **1 800/jour**, débit 300/min |
-| Récupération | En une fois | **Deux temps** : jugement sur les pages récentes (`judge_pages`), puis complétion progressive des wallets qualifiés jusqu'à `history_days` (curseur enregistré), puis mise à jour incrémentale |
+| Pré-filtre | Chaîne où le wallet a été repéré | **Chaînes du pré-filtre** (`prefilter_chains` : Base, Robinhood, BSC, Ethereum, Arc) **+ la chaîne où il a été repéré**, toutes via HyperSync |
+| Récupération | En une fois | **6 mois complets** pour chaque wallet qui passe le pré-filtre, repris au curseur d'un jour à l'autre si le quota est atteint, puis mise à jour incrémentale |
 
-Zerion reste interdit pour l'identification des early buyers (découverte = HyperSync) et pour le pré-filtre (HyperSync, gratuit).
+Zerion n'est jamais utilisé pour la découverte ni pour le pré-filtre (HyperSync, gratuit).
 
 ## Déroulé par wallet
 
@@ -42,24 +43,32 @@ PENDING ──► PREFILTERED ──► HISTORY_FETCHED ──► QUALIFIED
     └───────────┴────────────────┴──► FILTERED (filter_reason)
 ```
 
-### 1. Pré-filtre — HyperSync (inchangé, seuil resserré)
+### 1. Pré-filtre — HyperSync, plusieurs chaînes EVM (gratuit)
 
-Sur la chaîne où le wallet a été repéré : fréquence (`max_txs_per_day` = 50, moyenne 7 jours) → `bot_frequency` ; inactivité → `inactive` ; adresse connue (exchange, dépôt…) → `exchange`. Le filtre `farmer` passe à l'étape 2 (il se mesure mieux sur l'historique Zerion multi-chaînes).
+Sur les chaînes de `prefilter_chains` (défaut : Base, Robinhood, BSC, Ethereum, Arc ; réglable) **plus la chaîne où le wallet a été repéré**. Les mesures sont **additionnées sur ces chaînes** :
+
+| Filtre | Mesure HyperSync | Raison |
+|---|---|---|
+| Adresse connue | registre (exchange, dépôt, service…) | `exchange` |
+| Bot | transactions signées sur 7 jours > `max_txs_per_day` × 7 (50/jour) | `bot_frequency` |
+| Inactif | moins de `min_txs_active` transactions signées sur `inactive_days` | `inactive` |
+| Farmer | plus de `max_distinct_tokens` tokens différents reçus sur `history_days` | `farmer` |
+| Bot MEV | part des achats revendus dans le même bloc > `max_mev_ratio` | `bot_mev` |
+
+Les transferts HyperSync servent uniquement à ces mesures ; ils ne sont pas stockés. Le bruit s'arrête ici, **sans aucun appel Zerion**. Les chaînes où le wallet est actif sont enregistrées (`active_chains`).
 
 ### 2. Historique — Zerion
 
 - `GET /wallets/{address}/transactions/` avec `filter[min_mined_at]` = maintenant − `history_days`, `filter[operation_types]` = `trade,send,receive,execute,mint,burn`, `filter[trash]=only_non_trash`, `currency=usd`, `page[size]=100`.
-- **Jugement** : pagination depuis la transaction la plus récente jusqu'à la fin de la période ou `judge_pages` pages (10, ~1 000 transactions). Le curseur de la page suivante (`history_cursor`) est enregistré ; `history_complete = true` si la période est entièrement couverte.
+- **6 mois complets** : pagination depuis la transaction la plus récente jusqu'au début de la période. Si le budget du jour est atteint, le curseur de la page suivante (`history_cursor`) est enregistré et la récupération reprend au prochain passage. `history_complete = true` quand la période est entièrement couverte ; **les décisions (filtres, liens, valeur, tags) ne sont prises qu'une fois l'historique complet**.
 - Les transactions sans transfert sont ignorées. Les transactions `failed` sont ignorées.
-- Filtres sur l'historique :
-  - `farmer` : plus de `max_distinct_tokens` tokens différents reçus sur la période ;
-  - `bot_mev` : part des achats revendus dans le **même bloc** au-delà de `max_mev_ratio` ;
+- Filtres sur l'historique complet (toutes chaînes) :
+  - `farmer` et `bot_mev` **revérifiés** sur les données Zerion (un wallet propre sur les chaînes du pré-filtre peut être farmer ailleurs) ;
   - `too_few_trades` : moins de `min_distinct_buys` tokens achetés.
 - Écriture idempotente (mise à jour à la relance), puis recalcul des positions.
 
-### 2 bis. Complétion et mise à jour — Zerion
+### 2 bis. Mise à jour — Zerion
 
-- **Complétion (backfill)** : pour les wallets `QUALIFIED` dont l'historique n'est pas complet, la pagination reprend au `history_cursor`, jour après jour, jusqu'à couvrir `history_days`. Part du budget quotidien réservée : `backfill_budget_pct` (30 %). Les wallets les mieux classés d'abord. Positions et tags sont recalculés à chaque complétion.
 - **Mise à jour incrémentale** : pour un wallet complet, on ne récupère plus que les transactions postérieures à la dernière connue (`filter[min_mined_at]`), environ 1 page. Base du futur tracking live.
 
 ### 3. Wallets liés — liens forts uniquement
@@ -124,7 +133,7 @@ SNIPER, EARLY_BUYER, ACCUMULATEUR, FLIPPER, HOLDER, calculés sur les mouvements
 
 ### `WalletProfile`
 
-Ajouts : `priority` (score de priorité), `linked_value_usd` (valeur des wallets liés), `history_cursor` (page Zerion suivante), `history_complete`, `last_mined_at` (dernière transaction connue). Suppression de `entity`.
+Ajouts : `priority` (score de priorité), `active_chains` (chaînes actives détectées au pré-filtre), `linked_value_usd` (valeur des wallets liés), `history_cursor` (page Zerion suivante), `history_complete`, `last_mined_at` (dernière transaction connue). Suppression de `entity` et de `chains` (remplacé par `active_chains`).
 
 ### Supprimé (YAGNI)
 
@@ -136,21 +145,21 @@ Ajouts : `priority` (score de priorité), `linked_value_usd` (valeur des wallets
 
 ### Réglages
 
-`QualificationSettings` : `max_txs_per_day` = 50, `history_days` = 180, `big_receive_pct` = 30 ; suppression de `follow_depth`, `funder_max_wallets` (financement informatif). `PipelineSettings` : `zerion_daily_budget` = 1 800, `zerion_requests_per_min` = 300, `judge_pages` = 10, `backfill_budget_pct` = 30.
+`QualificationSettings` : `max_txs_per_day` = 50, `history_days` = 180, `big_receive_pct` = 30 ; suppression de `follow_depth`, `funder_max_wallets` (financement informatif). `PipelineSettings` : `zerion_daily_budget` = 1 800, `zerion_requests_per_min` = 300, `prefilter_chains` = `["base", "robinhood", "bsc", "eth", "arc"]` (gt_id) ; suppression de `extra_chains`.
 
 ## Priorité de traitement
 
-`priority` = nombre d'explosions où le wallet est early buyer (poids fort) puis montant total des early buys en $. La tâche quotidienne traite les profils en attente par priorité décroissante, dans la limite du budget Zerion. Les wallets liés (1 appel chacun) passent avant les nouveaux wallets, pour que les valeurs liées soient complètes.
+`priority` = nombre d'explosions où le wallet est early buyer (poids fort) puis montant total des early buys en $. La tâche quotidienne traite par priorité décroissante, dans la limite du budget Zerion : d'abord les wallets liés (1 appel chacun, pour que les valeurs liées soient complètes), puis les historiques en cours de récupération (reprise au curseur), puis les nouveaux wallets.
 
 ## Coût Zerion estimé
 
 | Poste | Appels |
 |---|---|
-| Jugement d'un wallet (pages récentes, sans `approve`) | 1 à 10 pages |
-| Complétion d'un wallet qualifié (180 j) | 0 à ~90 pages, étalées sur plusieurs jours |
+| Pré-filtre (HyperSync, 5-6 chaînes) | 0 appel Zerion (~20-25 requêtes HyperSync) |
+| Historique 6 mois d'un wallet (sans `approve`) | ~4 pages (calme) à ~90 pages (50 tx/jour), étalées sur plusieurs jours si besoin |
 | Mise à jour incrémentale | ~1 page |
 | Valeur d'un wallet ou d'un wallet lié | 1 |
-| Par jour (budget 1 800) | ~100 à 150 wallets jugés + complétion des qualifiés (30 % du budget) |
+| Par jour (budget 1 800) | ~60 à 100 wallets complets |
 
 ## Gestion des erreurs
 
@@ -161,18 +170,20 @@ Ajouts : `priority` (score de priorité), `linked_value_usd` (valeur des wallets
 
 - Clients Zerion (`respx`) : pagination, filtres, parsing des transferts (quantité, prix, valeur, direction), `/portfolio`.
 - Purs : conversion transaction Zerion → lignes, classement buy/sell/send/receive, positions, filtres (farmer, MEV, trop peu de trades), liens forts (transfert après achat, gros transfert reçu en %), tags, priorité.
-- Tâches : idempotence, arrêt à `judge_pages`, reprise au curseur (complétion), mise à jour incrémentale, part de budget réservée à la complétion, réévaluation d'un wallet quand la valeur de son wallet lié arrive.
+- Tâches : pré-filtre additionné sur plusieurs chaînes, idempotence, reprise au curseur quand le budget est atteint, décisions seulement sur historique complet, mise à jour incrémentale, réévaluation d'un wallet quand la valeur de son wallet lié arrive.
 - Live : historique et portfolio Zerion sur un vrai wallet.
 
 ## Critères de réussite
 
-1. L'historique des wallets qualifiés finit par couvrir 180 jours complets, sans dépasser le budget quotidien.
-2. Chaque mouvement stocké porte le type d'opération Zerion et, quand Zerion le fournit, prix et valeur au moment de la transaction.
-3. Un wallet actif sur plusieurs chaînes est vu sur toutes (historique et valeur).
-4. Le cas « wallet d'achat → coffre » est qualifié grâce à la valeur du coffre lié.
-5. Les airdrops de spam ne créent ni lien ni bruit dans les décisions.
-6. Le budget Zerion quotidien n'est jamais dépassé ; les meilleurs wallets passent en premier.
-7. `make test` et `make lint` passent.
+1. Le bruit (bot, farmer, MEV, inactif, exchange) est écarté par HyperSync sur les chaînes du pré-filtre, sans appel Zerion.
+2. Chaque wallet retenu finit avec 180 jours d'historique complet, toutes chaînes, sans dépasser le budget quotidien.
+3. Chaque mouvement stocké porte le type d'opération Zerion et, quand Zerion le fournit, prix et valeur au moment de la transaction.
+4. Un wallet actif sur plusieurs chaînes est vu sur toutes (historique et valeur).
+5. Le cas « wallet d'achat → coffre » est qualifié grâce à la valeur du coffre lié.
+6. Les airdrops de spam ne créent ni lien ni bruit dans les décisions.
+7. Le budget Zerion quotidien n'est jamais dépassé ; les meilleurs wallets passent en premier.
+8. `make test` et `make lint` passent.
+
 ## Hors périmètre
 
 - Scoring (rendement, FIFO)
