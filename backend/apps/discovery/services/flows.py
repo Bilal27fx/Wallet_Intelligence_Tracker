@@ -15,6 +15,7 @@ from integrations.geckoterminal import Candle
 from integrations.hypersync import Transfer
 
 ZERO_ADDRESS = "0x" + "0" * 40
+DEAD_ADDRESS = "0x" + "0" * 36 + "dead"
 HUB, DEPOSIT, KNOWN, VAULT = "hub", "deposit", "known", "vault"
 
 
@@ -80,7 +81,7 @@ class FlowScanner:
 
 def hubs(scanner: FlowScanner) -> set[str]:
     found = {r for r, senders in scanner.senders.items() if len(senders) >= scanner.hub_min_senders}
-    return found | {ZERO_ADDRESS}
+    return found | {ZERO_ADDRESS, DEAD_ADDRESS}
 
 
 def classify_recipients(

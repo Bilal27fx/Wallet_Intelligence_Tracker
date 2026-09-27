@@ -4,6 +4,7 @@ from apps.discovery.services.flows import (
     DEPOSIT,
     HUB,
     VAULT,
+    DEAD_ADDRESS,
     ZERO_ADDRESS,
     FlowScanner,
     classify_recipients,
@@ -82,6 +83,12 @@ def test_send_to_hub_is_an_exit():
 def test_burn_is_an_exit():
     kinds, flows = resolve(scan([buy(1, A, 1000), send(2, A, ZERO_ADDRESS, 900)]))
     assert kinds[ZERO_ADDRESS] == HUB and not flows.links
+
+
+def test_send_to_dead_address_is_a_burn():
+    kinds, flows = resolve(scan([buy(1, A, 1000), send(2, A, DEAD_ADDRESS, 900)]))
+    assert kinds[DEAD_ADDRESS] == HUB and not flows.links
+    assert flows.holders[A].held == 100 * UNIT
 
 
 def test_deposit_address_forwarding_to_hub_is_an_exit():
