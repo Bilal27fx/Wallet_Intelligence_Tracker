@@ -29,6 +29,10 @@ class Thresholds:
     buyer_window_hours: int
     min_score: float
     max_multiplier: float
+    hub_min_senders: int
+    vault_follow_depth: int
+    bot_window_days: int
+    vault_min_pct: float
 
 
 def thresholds_for(chain: Chain) -> Thresholds:

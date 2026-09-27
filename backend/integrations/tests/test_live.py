@@ -74,6 +74,10 @@ LIVE_THRESHOLDS = Thresholds(
     buyer_window_hours=0,
     min_score=5,
     max_multiplier=10_000,
+    hub_min_senders=10,
+    vault_follow_depth=2,
+    bot_window_days=7,
+    vault_min_pct=20,
 )
 
 

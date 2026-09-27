@@ -38,6 +38,10 @@ T = Thresholds(
     buyer_window_hours=0,
     min_score=0,
     max_multiplier=0,
+    hub_min_senders=10,
+    vault_follow_depth=2,
+    bot_window_days=7,
+    vault_min_pct=20,
 )
 
 
