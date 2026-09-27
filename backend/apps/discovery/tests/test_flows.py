@@ -1,10 +1,10 @@
 import pytest
 
 from apps.discovery.services.flows import (
+    DEAD_ADDRESS,
     DEPOSIT,
     HUB,
     VAULT,
-    DEAD_ADDRESS,
     ZERO_ADDRESS,
     FlowScanner,
     classify_recipients,
