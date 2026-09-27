@@ -3,8 +3,8 @@
 from collections import Counter
 
 from apps.discovery.models import Chain
-from apps.discovery.services.blocks import find_block_at
 from apps.wallets.models import KnownAddress
+from apps.wallets.services.blocks import block_at
 from integrations.hypersync import WalletTransfer
 
 
@@ -57,7 +57,7 @@ def detect_exchange(address: str, chain, hypersync, t, now, height: int) -> bool
     address = address.lower()
     if KnownAddress.objects.blocking_for(address, [chain.pk]).exists():
         return True
-    week = find_block_at(int(now.timestamp()) - WEEK, 0, height, hypersync.block_timestamp)
+    week = block_at(hypersync, chain, int(now.timestamp()) - WEEK, height)
     if _is_hot(address, hypersync, t, week, height):
         register(address, chain, KnownAddress.Kind.EXCHANGE, "hot wallet (auto)")
         return True

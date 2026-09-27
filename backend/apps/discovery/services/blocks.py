@@ -29,3 +29,27 @@ def find_block_at(target_ts: int, low: int, high: int, timestamp_of: Callable[[i
             high, high_ts = middle, middle_ts
         step += 1
     return high
+
+
+def find_block_near(
+    target_ts: int, height: int, timestamp_of: Callable[[int], int], sample: int = 100_000
+) -> int:
+    """Premier bloc dont le timestamp est >= target_ts, en partant du rythme récent des blocs.
+
+    Estime le bloc cible depuis le temps de bloc des `sample` derniers blocs, puis cherche dans
+    une fenêtre étroite autour de l'estimation. Si la cible n'y est pas (chaîne irrégulière),
+    retombe sur la recherche complète [0, height].
+    """
+    top_ts = timestamp_of(height)
+    if target_ts >= top_ts:
+        return height
+    reference = max(height - sample, 0)
+    reference_ts = timestamp_of(reference)
+    if height > reference and top_ts > reference_ts:
+        seconds_per_block = (top_ts - reference_ts) / (height - reference)
+        guess = int(height - (top_ts - target_ts) / seconds_per_block)
+        span = max(abs(height - guess) // 20, 1_000)
+        low, high = max(guess - span, 0), min(guess + span, height)
+        if timestamp_of(low) < target_ts <= timestamp_of(high):
+            return find_block_at(target_ts, low, high, timestamp_of)
+    return find_block_at(target_ts, 0, height, timestamp_of)

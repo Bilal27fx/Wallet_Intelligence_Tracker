@@ -9,7 +9,6 @@ from decimal import Decimal
 from django.db import transaction
 
 from apps.discovery.models import Chain, EarlyBuyer, Token
-from apps.discovery.services.blocks import find_block_at
 from apps.wallets.models import (
     Entity,
     KnownAddress,
@@ -18,6 +17,7 @@ from apps.wallets.models import (
     WalletLink,
     WalletProfile,
 )
+from apps.wallets.services.blocks import block_at
 from apps.wallets.services.classify import Trade, classify_all
 from apps.wallets.services.entities import (
     add_link,
@@ -66,10 +66,6 @@ def _decimal(value: float | None) -> Decimal | None:
 
 def profile_chains(profile: WalletProfile) -> list[Chain]:
     return list(Chain.objects.active().filter(pk__in=profile.chains))
-
-
-def block_at(hypersync, ts: int, height: int) -> int:
-    return find_block_at(ts, 0, height, hypersync.block_timestamp)
 
 
 def filter_out(profile: WalletProfile, reason: str, now: datetime) -> str:
@@ -175,8 +171,8 @@ def prefilter_step(profile: WalletProfile, clients: Clients, now: datetime) -> s
         t = qualification_thresholds(chain)
         hypersync = clients.hypersync_for(chain)
         height = hypersync.height()
-        week = block_at(hypersync, ts_now - 7 * DAY, height)
-        active = block_at(hypersync, ts_now - t.inactive_days * DAY, height)
+        week = block_at(hypersync, chain, ts_now - 7 * DAY, height)
+        active = block_at(hypersync, chain, ts_now - t.inactive_days * DAY, height)
         activity = ChainActivity(
             txs_7d=hypersync.wallet_tx_count(
                 wallet.address, week, height, cap=t.max_txs_per_day * 7 + 1
@@ -204,7 +200,7 @@ def history_step(profile: WalletProfile, clients: Clients, now: datetime) -> str
         t = qualification_thresholds(chain)
         hypersync = clients.hypersync_for(chain)
         height = hypersync.height()
-        start = block_at(hypersync, int(now.timestamp()) - t.history_days * DAY, height)
+        start = block_at(hypersync, chain, int(now.timestamp()) - t.history_days * DAY, height)
         transfers = hypersync.wallet_transfers(wallet.address, start, height)
         distinct[chain.gt_id] = len({x.token for x in transfers if x.recipient == wallet.address})
         reason = farmer_reason(distinct[chain.gt_id], t)
