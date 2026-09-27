@@ -33,7 +33,17 @@ class ChainAdmin(admin.ModelAdmin):
     list_editable = ["is_enabled"]
     list_filter = ["is_enabled", "hypersync_supported"]
     search_fields = ["gt_id", "name"]
-    readonly_fields = ["gt_id", "name", "evm_id", "zerion_id", "hypersync_supported", "updated_at"]
+    readonly_fields = [
+        "gt_id",
+        "name",
+        "evm_id",
+        "zerion_id",
+        "hypersync_supported",
+        "rpc_url",
+        "native_fungible_id",
+        "wrapped_fungible_id",
+        "updated_at",
+    ]
 
     def has_add_permission(self, request):
         return False
