@@ -49,7 +49,8 @@ def find_block_near(
         seconds_per_block = (top_ts - reference_ts) / (height - reference)
         guess = int(height - (top_ts - target_ts) / seconds_per_block)
         span = max(abs(height - guess) // 20, 1_000)
-        low, high = max(guess - span, 0), min(guess + span, height)
-        if timestamp_of(low) < target_ts <= timestamp_of(high):
+        low = min(max(guess - span, 0), height)
+        high = min(max(guess + span, 0), height)
+        if low < high and timestamp_of(low) < target_ts <= timestamp_of(high):
             return find_block_at(target_ts, low, high, timestamp_of)
     return find_block_at(target_ts, 0, height, timestamp_of)

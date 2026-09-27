@@ -73,3 +73,13 @@ def test_find_block_near_falls_back_on_irregular_chains():
         return block * 1000 if block < 1000 else 1_000_000 + (block - 1000)
 
     assert find_block_near(500_000, 10_000_000, timestamp_of) == 500
+
+
+def test_find_block_near_target_before_chain_start():
+    # Chaîne jeune : la cible (il y a un an) précède le premier bloc → bloc 0, jamais négatif.
+    def timestamp_of(block: int) -> int:
+        return 0 if block == 0 else 1_780_000_000 + block // 4
+
+    height = 40_000_000
+    target = timestamp_of(height) - 365 * 86_400
+    assert find_block_near(target, height, timestamp_of) in (0, 1)
