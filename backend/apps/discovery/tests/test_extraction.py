@@ -6,8 +6,11 @@ from apps.discovery.models import (
     Candidate,
     DetectionSettings,
     EarlyBuyer,
+    EntityEarlyBuy,
+    ExcludedBuyer,
     Explosion,
     PipelineSettings,
+    TokenTransfer,
     Wallet,
 )
 from apps.discovery.services.analysis import analyze_candidate
@@ -25,6 +28,8 @@ from apps.discovery.tests.fakes import (
     FakeHyperSync,
     block_of,
 )
+from apps.wallets.models import WalletLink
+from integrations.hypersync import Transfer
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("young_waves")]
 
@@ -66,33 +71,59 @@ def test_stores_significant_eoa_buyers(confirmed):
     assert not alice.is_sniper
     assert buyers[SNIPER].is_sniper
     assert buyers[SNIPER].bought_usd == Decimal("2000.00")
+    assert alice.entity_id is not None
+    assert EntityEarlyBuy.objects.count() == 2
 
 
-def test_two_passes_buys_to_trough_then_sells_of_kept_buyers(confirmed):
+def test_scan_then_entity_pass_on_retained_wallets(confirmed):
     hypersync = FakeHyperSync()
     extract(confirmed, hypersync)
     explosion = confirmed.explosion
-    assert hypersync.transfer_calls == [
-        (TOKEN, 500, explosion.trough_block + 1, None, None),
-        (
-            TOKEN,
-            explosion.trough_block + 1,
-            explosion.peak_block + 1,
-            sorted([ALICE, SNIPER]),
-            None,
-        ),
+    first, *rest = hypersync.transfer_calls
+    assert first == (TOKEN, 500, explosion.trough_block + 1, None, None)
+    assert [call[1:] for call in rest] == [
+        (500, explosion.peak_block + 1, None, sorted([ALICE, SNIPER]))
     ]
+    assert TokenTransfer.objects.filter(explosion=explosion, kind="sell").count() == 1
+    assert TokenTransfer.objects.filter(explosion=explosion, kind="buy").count() == 2
     explosion.refresh_from_db()
     assert explosion.extraction_status == Explosion.Extraction.COMPLETE
 
 
-def test_sell_pass_is_batched(confirmed):
+def test_entity_pass_is_batched(confirmed):
     cfg = PipelineSettings.load()
     cfg.sell_pass_batch_size = 1
     cfg.save()
     hypersync = FakeHyperSync()
     extract(confirmed, hypersync)
-    assert [call[3] for call in hypersync.transfer_calls[1:]] == [[SNIPER], [ALICE]]
+    assert [call[4] for call in hypersync.transfer_calls[1:]] == [[SNIPER], [ALICE]]
+
+
+VAULT = "0x" + "7" * 40
+
+
+def with_vault():
+    fake = FakeHyperSync()
+    move = Transfer(610, fake.block_timestamp(610), ALICE, ALICE, VAULT, 600 * UNIT, "0xmove")
+    return fake._all_transfers() + [move]
+
+
+def test_vault_inherits_and_joins_alice_entity(confirmed):
+    extract(confirmed, FakeHyperSync(transfers=with_vault()))
+    alice = EarlyBuyer.objects.get(wallet__address=ALICE)
+    vault = EarlyBuyer.objects.get(wallet__address=VAULT)
+    assert alice.entity_id == vault.entity_id
+    assert (vault.inherited_amount, vault.inherited_from.address) == (Decimal(600 * UNIT), ALICE)
+    assert (alice.held_usd, vault.held_usd) == (Decimal("200.00"), Decimal("300.00"))
+    assert WalletLink.objects.get(to_wallet__address=VAULT).source == "hypersync"
+    assert EntityEarlyBuy.objects.get(entity_id=alice.entity_id).held_usd == Decimal("500.00")
+
+
+def test_bot_is_excluded_and_recorded(confirmed):
+    assert extract(confirmed, FakeHyperSync(tx_counts={SNIPER: 10_000})) == 1
+    assert not EarlyBuyer.objects.filter(wallet__address=SNIPER).exists()
+    excluded = ExcludedBuyer.objects.get()
+    assert (excluded.wallet.address, excluded.reason) == (SNIPER, "bot")
 
 
 def test_transfer_guard_keeps_partial_buyers(confirmed):
