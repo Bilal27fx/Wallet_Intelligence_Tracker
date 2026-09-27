@@ -23,7 +23,7 @@
 
 49 coffres dépasseraient le seuil du top 300.
 
-**Bots.** `0x4d75b19b…` reçoit de trois acheteurs, dont `0x000461…c111` et `0x00034187…e111` (adresses « vanity » en `0x000…`, typiques des bots). `0x000461…c111` signe 128 transactions en 24 h, 135/jour sur 7 jours, 182/jour sur 30 jours (seuil `max_txs_per_day` = 50) : c'est un bot, et `0x4d75…` son collecteur. Aujourd'hui le filtre bot n'existe qu'à la qualification : un bot peut occuper une place du top et, avec les entités, former une entité avec son collecteur.
+**Bots.** `0x000461…c111` (un des acheteurs mesurés) signe 128 transactions en 24 h, 135/jour sur 7 jours, 182/jour sur 30 jours (seuil `max_txs_per_day` = 50) : c'est un bot. Aujourd'hui le filtre bot n'existe qu'à la qualification : un bot peut occuper une place du top et ses envois pourraient créer une entité.
 
 ## Décisions
 
@@ -57,8 +57,7 @@ Après la passe 1, les candidats sont vérifiés **du plus gros au plus petit** 
 
 - pour chaque wallet d'une entité candidate : nombre de transactions signées (HyperSync, `wallet_tx_count`) entre `creux − bot_window_days` et le creux ;
 - au-delà de `max_txs_per_day` × `bot_window_days` → **bot** : le wallet est écarté (raison `bot` conservée) ;
-- un bot **ne forme pas d'entité** : ses envois sont des sorties, son destinataire n'hérite de rien ; les liens partant d'un bot ne sont pas créés ;
-- un wallet d'entité qui a reçu des tokens d'un bot est marqué `bot_funded` (indice affiché, sans exclusion automatique) ;
+- un bot est simplement écarté : **aucun lien, aucune entité** ; ses envois sont des sorties et leur destinataire n'hérite de rien ;
 - une entité dont tous les wallets sont des bots est écartée ; sinon on retire les bots et on recalcule sa position.
 
 Le seuil réutilise `max_txs_per_day` (réglage de qualification, valeur globale) ; `bot_window_days` (7) est un réglage de détection. Les résultats sont mis en cache Redis par (chaîne, wallet, jour du creux) pour ne pas recompter.
@@ -109,7 +108,7 @@ Position au creux = quantité restante × prix du creux. Les chaînes A → B �
 - `Entity` : `created_at`, `updated_at`, `merged_into` (nullable).
 - `Wallet.entity` (FK nullable).
 - `WalletLink` : + `source` (`hypersync` / `zerion`), + `rejected` (bool), + type `TRANSFER_TO_VAULT`.
-- `EarlyBuyer` : + `entity`, + `inherited_amount`, + `inherited_usd`, + `inherited_from` (FK Wallet nullable), + `bot_funded` (bool).
+- `EarlyBuyer` : + `entity`, + `inherited_amount`, + `inherited_usd`, + `inherited_from` (FK Wallet nullable).
 - `ExcludedBuyer` : `explosion`, `wallet`, `reason` (`bot`), `txs_per_day`, `held_usd` — trace des candidats écartés, pour contrôle.
 - `EntityEarlyBuy` : `entity`, `explosion`, `held_usd`, `held_amount`, `first_buy_at`, `sold_during_rise_pct`, `rank` ; unique (entité, explosion).
 - `TokenTransfer`, `TokenInfo`, `PortfolioSnapshot`, `PortfolioPosition` (ci-dessus).
@@ -122,11 +121,11 @@ Page **Entités** : wallets, liens avec preuves (source, hash, %), early buys pa
 
 ## Tests
 
-- **Purs** : classement des destinataires (pool, hub, dépôt, exchange connu, coffre dont smart wallet peu alimenté) ; positions avec héritage A → B → C et prix de revient au prorata ; petits envois = sorties ; union et fusion d'entités ; classement par entité (4 wallets = 1 place) ; un bot est écarté et remplacé par le suivant ; un bot ne crée pas d'entité ; `bot_funded`.
+- **Purs** : classement des destinataires (pool, hub, dépôt, exchange connu, coffre dont smart wallet peu alimenté) ; positions avec héritage A → B → C et prix de revient au prorata ; petits envois = sorties ; union et fusion d'entités ; classement par entité (4 wallets = 1 place) ; un bot est écarté et remplacé par le suivant ; un bot ne crée ni lien ni entité.
 - **Extraction** (faux HyperSync) : un coffre entre dans le top par héritage ; suivi pendant la montée jusqu'à la profondeur ; dépôt reclassé en sortie ; `TokenTransfer` enregistrés.
 - **Qualification** : liens Zerion → entités ; `is_internal` ; positions sans mouvements internes ; valeur d'entité ; priorité par entité ; détacher un wallet.
 - **Couche brute** : `TokenInfo` par lots et rafraîchissement ; photo de portefeuille par token.
-- **Live (AI)** : `0x000461…c111` est écarté comme bot et `0x4d75…` n'hérite pas de ses tokens ; `0x44df…` reste dans le top ; nombre de coffres entrés proche de 49.
+- **Live (AI)** : `0x000461…c111` est écarté comme bot, sans lien ni entité ; `0x44df…` reste dans le top ; nombre de coffres entrés proche de 49.
 
 ## Critères de réussite
 
