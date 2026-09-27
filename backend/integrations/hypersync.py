@@ -1,6 +1,7 @@
 """Client HyperSync (Envio) : chaînes supportées, blocs et transferts ERC-20."""
 
 import asyncio
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import hypersync
@@ -15,7 +16,7 @@ from hypersync import (
     TransactionSelection,
 )
 
-from integrations.errors import TooManyTransfers, UpstreamError
+from integrations.errors import UpstreamError
 
 CHAINS_URL = "https://chains.hyperquery.xyz"
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -117,13 +118,19 @@ class HyperSyncClient:
             self._timestamps[number] = blocks[number]
         return self._timestamps[number]
 
-    def transfers(
-        self, token: str, from_block: int, to_block: int, max_transfers: int
-    ) -> list[Transfer]:
+    def transfer_pages(
+        self, token: str, from_block: int, to_block: int, senders: list[str] | None = None
+    ) -> Iterator[list[Transfer]]:
+        """Transferts ERC-20 du token page par page ; `senders` filtre l'expéditeur (topic1)."""
+        if from_block >= to_block:
+            return
+        topics = [[TRANSFER_TOPIC]]
+        if senders:
+            topics.append([address_topic(sender) for sender in senders])
         query = Query(
             from_block=from_block,
             to_block=to_block,
-            logs=[LogSelection(address=[token], topics=[[TRANSFER_TOPIC]])],
+            logs=[LogSelection(address=[token], topics=topics)],
             field_selection=FieldSelection(
                 block=[BlockField.NUMBER, BlockField.TIMESTAMP],
                 transaction=[TransactionField.HASH, TransactionField.FROM],
@@ -137,36 +144,32 @@ class HyperSyncClient:
                 ],
             ),
         )
-        transfers: list[Transfer] = []
-        while True:
-            response = self._get(query)
-            data = response.data
-            timestamps = {block.number: _int(block.timestamp) for block in data.blocks}
-            senders = {
-                tx.hash: tx.from_.lower() for tx in data.transactions if tx.hash and tx.from_
-            }
-            for log in data.logs:
-                # HyperSync complète toujours à 4 topics avec None.
-                topics = [topic for topic in (log.topics or []) if topic]
-                tx_from = senders.get(log.transaction_hash)
-                # Les Transfer ERC-721 ont 4 topics et pas de data : on les ignore.
-                if len(topics) != 3 or not log.data or log.data == "0x" or tx_from is None:
-                    continue
-                transfers.append(
-                    Transfer(
-                        block=log.block_number,
-                        timestamp=timestamps.get(log.block_number, 0),
-                        tx_from=tx_from,
-                        sender=_topic_address(topics[1]),
-                        recipient=_topic_address(topics[2]),
-                        amount=_int(log.data),
-                    )
+        for data in self._pages(query, to_block):
+            yield self._token_transfers(data)
+
+    @staticmethod
+    def _token_transfers(data) -> list[Transfer]:
+        timestamps = {block.number: _int(block.timestamp) for block in data.blocks}
+        senders = {tx.hash: tx.from_.lower() for tx in data.transactions if tx.hash and tx.from_}
+        transfers = []
+        for log in data.logs:
+            # HyperSync complète toujours à 4 topics avec None.
+            topics = [topic for topic in (log.topics or []) if topic]
+            tx_from = senders.get(log.transaction_hash)
+            # Les Transfer ERC-721 ont 4 topics et pas de data : on les ignore.
+            if len(topics) != 3 or not log.data or log.data == "0x" or tx_from is None:
+                continue
+            transfers.append(
+                Transfer(
+                    block=log.block_number,
+                    timestamp=timestamps.get(log.block_number, 0),
+                    tx_from=tx_from,
+                    sender=_topic_address(topics[1]),
+                    recipient=_topic_address(topics[2]),
+                    amount=_int(log.data),
                 )
-            if len(transfers) > max_transfers:
-                raise TooManyTransfers(f"{token} : plus de {max_transfers} transferts")
-            if response.next_block >= to_block:
-                return transfers
-            query.from_block = response.next_block
+            )
+        return transfers
 
     def wallet_tx_count(self, address: str, from_block: int, to_block: int, cap: int) -> int:
         query = Query(

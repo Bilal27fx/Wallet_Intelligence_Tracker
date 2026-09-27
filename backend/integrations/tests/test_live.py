@@ -44,6 +44,7 @@ def test_hypersync_reads_blocks_and_transfers():
     height = client.height()
     assert client.block_timestamp(height - 100) > 1_700_000_000
     usdc = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
-    transfers = client.transfers(usdc, height - 20, height - 10, max_transfers=100_000)
+    pages = client.transfer_pages(usdc, height - 20, height - 10)
+    transfers = [transfer for page in pages for transfer in page]
     assert transfers
     assert all(t.tx_from.startswith("0x") and len(t.tx_from) == 42 for t in transfers)
