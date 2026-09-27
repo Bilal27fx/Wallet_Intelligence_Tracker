@@ -19,6 +19,7 @@ THRESHOLD_FIELDS = (
     "sniper_blocks",
     "min_buy_usd",
     "max_buyers",
+    "explosion_window_hours",
 )
 CLOSED_STATUSES = ("rejected", "buyers_extracted")
 UINT256_DIGITS = 78
@@ -37,6 +38,9 @@ class Chain(models.Model):
     evm_id = models.PositiveBigIntegerField(null=True, blank=True)
     zerion_id = models.CharField(max_length=64, blank=True, default="")
     hypersync_supported = models.BooleanField(default=False)
+    rpc_url = models.CharField(max_length=300, blank=True, default="")
+    native_fungible_id = models.CharField(max_length=100, blank=True, default="")
+    wrapped_fungible_id = models.CharField(max_length=100, blank=True, default="")
     is_enabled = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -82,6 +86,11 @@ class DetectionSettings(models.Model):
     max_buyers = models.PositiveIntegerField(
         null=True, blank=True, help_text="0 = pas de plafond. Vide = valeur globale."
     )
+    explosion_window_hours = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Le point bas et le pic doivent se trouver dans ces dernières heures.",
+    )
 
     class Meta:
         verbose_name = "réglages de détection"
@@ -104,6 +113,19 @@ class DetectionSettings(models.Model):
                 )
 
 
+def default_stablecoins() -> list[str]:
+    # Conservée pour la migration 0005 (champ supprimé depuis).
+    return ["USDC", "USDT", "DAI"]
+
+
+def default_prefilter_chains() -> list[str]:
+    return ["base", "robinhood", "bsc", "eth", "arc"]
+
+
+def default_quote_symbols() -> list[str]:
+    return ["ETH", "WETH", "BNB", "WBNB", "USDC", "USDT", "DAI", "USDC.E", "USDBC", "FDUSD"]
+
+
 class PipelineSettings(models.Model):
     trending_pages = models.PositiveSmallIntegerField(default=10)
     volume_pages_per_chain = models.PositiveSmallIntegerField(default=3)
@@ -117,6 +139,18 @@ class PipelineSettings(models.Model):
     http_backoff_seconds = models.PositiveIntegerField(
         default=5, help_text="Attente avant la 1re nouvelle tentative, doublée à chaque essai."
     )
+    zerion_daily_budget = models.PositiveIntegerField(default=1800)
+    zerion_requests_per_min = models.PositiveIntegerField(default=300)
+    prefilter_chains = models.JSONField(
+        default=default_prefilter_chains,
+        help_text="gt_id des chaînes du pré-filtre HyperSync (+ chaîne où le wallet est repéré).",
+    )
+    quote_symbols = models.JSONField(
+        default=default_quote_symbols,
+        help_text="Monnaies de paiement : leurs jambes de trade ne comptent pas comme achats.",
+    )
+    history_refresh_days = models.PositiveIntegerField(default=7)
+    qualification_batch_size = models.PositiveIntegerField(default=100)
 
     class Meta:
         verbose_name = "réglages du pipeline"

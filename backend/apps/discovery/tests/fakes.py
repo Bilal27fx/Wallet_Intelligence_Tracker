@@ -4,11 +4,12 @@ from datetime import UTC, datetime, timedelta
 
 from integrations.geckoterminal import Candle, GtNetwork, GtPool, GtToken
 from integrations.hypersync import Transfer
+from integrations.zerion import ZerionChain
 
 HOUR = 3600
 UNIT = 10**18
 NOW = datetime(2026, 9, 20, 12, tzinfo=UTC)
-POOL_CREATED = NOW - timedelta(hours=100)
+POOL_CREATED = NOW - timedelta(hours=60)
 TOKEN = "0x" + "1" * 40
 POOL = "0x" + "2" * 40
 ALICE = "0x" + "a" * 40
@@ -89,8 +90,11 @@ class FakeDirectory:
 
 
 class FakeZerion:
+    def chains(self):
+        return [ZerionChain("base", 8453, "https://mainnet.base.org/", "eth", "0xweth")]
+
     def chain_ids(self):
-        return {8453: "base"}
+        return {chain.evm_id: chain.zerion_id for chain in self.chains()}
 
 
 class FakeHyperSync:

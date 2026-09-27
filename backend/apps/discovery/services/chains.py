@@ -6,7 +6,7 @@ from apps.discovery.models import Chain
 def sync_chains(gt, coingecko, directory, zerion) -> int:
     platform_ids = coingecko.platform_chain_ids()
     hypersync_ids = directory.supported_chain_ids()
-    zerion_ids = zerion.chain_ids()
+    zerion_chains = {chain.evm_id: chain for chain in zerion.chains()}
     count = 0
     for network in gt.networks():
         evm_id = (
@@ -14,12 +14,16 @@ def sync_chains(gt, coingecko, directory, zerion) -> int:
             if network.coingecko_platform_id
             else None
         )
+        zc = zerion_chains.get(evm_id) if evm_id else None
         Chain.objects.update_or_create(
             gt_id=network.gt_id,
             defaults={
                 "name": network.name,
                 "evm_id": evm_id,
-                "zerion_id": zerion_ids.get(evm_id, "") if evm_id else "",
+                "zerion_id": zc.zerion_id if zc else "",
+                "rpc_url": zc.rpc_url if zc else "",
+                "native_fungible_id": zc.native_fungible_id if zc else "",
+                "wrapped_fungible_id": zc.wrapped_fungible_id if zc else "",
                 "hypersync_supported": evm_id in hypersync_ids if evm_id else False,
             },
         )

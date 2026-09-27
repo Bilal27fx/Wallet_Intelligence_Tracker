@@ -69,7 +69,7 @@ Principe : le strict nécessaire, rien de recalculable. Clés primaires `BigAuto
 | Modèle | Champs |
 |---|---|
 | `Chain` | `gt_id` (unique), `name`, `evm_id` (chain id EVM, null si inconnu), `zerion_id` (vide si non supporté), `hypersync_supported`, `is_enabled` (défaut `True`), `updated_at` |
-| `DetectionSettings` | `chain` (FK unique, null = ligne globale) + seuils nullables (null = valeur globale) : `min_change_24h_pct`, `min_liquidity_usd`, `min_volume_usd`, `peak_volume_window_hours`, `min_fdv_usd`, `max_fdv_usd`, `max_pool_age_hours`, `min_multiplier`, `min_retention_pct`, `confirmation_hours`, `confirmation_timeout_hours`, `sniper_blocks`, `min_buy_usd`, `max_buyers` (0 = pas de plafond) |
+| `DetectionSettings` | `chain` (FK unique, null = ligne globale) + seuils nullables (null = valeur globale) : `min_change_24h_pct`, `min_liquidity_usd`, `min_volume_usd`, `peak_volume_window_hours`, `min_fdv_usd`, `max_fdv_usd`, `max_pool_age_hours`, `min_multiplier`, `min_retention_pct`, `confirmation_hours`, `confirmation_timeout_hours`, `sniper_blocks`, `min_buy_usd`, `max_buyers` (0 = pas de plafond), `explosion_window_hours` |
 | `PipelineSettings` | Singleton (une seule ligne) : `trending_pages`, `volume_pages_per_chain`, `candidate_cooldown_hours`, `max_transfers_per_token`, `max_attempts`, `gecko_requests_per_min`, `hypersync_requests_per_min`, `http_timeout_seconds`, `http_max_retries` |
 | `Token` | `chain`, `address`, `symbol`, `decimals` — unique (`chain`, `address`) |
 | `Pool` | `token`, `address`, `created_block` — unique (`token`, `address`) |
@@ -103,6 +103,7 @@ Créées par une data migration, puis gérées uniquement dans l'admin. Ce sont 
 | `sniper_blocks` | 3 |
 | `min_buy_usd` | 500 |
 | `max_buyers` | 300 |
+| `explosion_window_hours` | 72 |
 
 `min_buy_usd` et `max_buyers` s'appliquent dans cet ordre : on garde les acheteurs ≥ `min_buy_usd`, puis les `max_buyers` plus gros parmi eux.
 
@@ -176,7 +177,7 @@ Traite les `CANDIDATE` et les `WAITING_CONFIRMATION` dont `next_check_at` est pa
 
 1. Récupère tous les pools du token (`GET /networks/{gt_id}/tokens/{address}/pools`) et `decimals`. Upsert `Pool`.
 2. OHLCV du pool le plus liquide. Résolution choisie pour couvrir l'âge du pool en ≤ 1 000 bougies (1 h, 4 h ou 1 j).
-3. `detect_explosion(candles, settings)` (pure) : meilleur ratio `pic / plus bas précédent` sur les clôtures, en un seul passage. Sous `min_multiplier` → `REJECTED/no_explosion`.
+3. `detect_explosion(candles, settings)` (pure) : meilleur ratio `pic / plus bas précédent` sur les clôtures, en un seul passage, **uniquement sur les `explosion_window_hours` dernières heures** : on cible l'explosion récente, pas la plus grosse de l'historique. Sous `min_multiplier` → `REJECTED/no_explosion`.
 4. Garde-fous :
    - volume cumulé sur `peak_volume_window_hours` autour du pic ≥ `min_volume_usd`, sinon `low_volume` ;
    - liquidité actuelle ≥ `min_liquidity_usd`, sinon `low_liquidity` ;

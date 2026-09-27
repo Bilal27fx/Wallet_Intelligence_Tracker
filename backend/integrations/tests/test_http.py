@@ -2,7 +2,7 @@ import httpx
 import pytest
 import respx
 
-from integrations.errors import NotFound, RateLimited, UpstreamError
+from integrations.errors import BudgetExhausted, NotFound, RateLimited, UpstreamError
 from integrations.http import JsonHttpClient
 from integrations.ratelimit import NoopLimiter
 
@@ -77,3 +77,40 @@ def test_retries_transport_errors():
     )
     client, _ = make_client()
     assert client.get("/items") == {"ok": 1}
+
+
+class CountingBudget:
+    def __init__(self, allowed: int):
+        self.allowed = allowed
+        self.used = 0
+
+    def consume(self):
+        self.used += 1
+        if self.used > self.allowed:
+            raise BudgetExhausted("fini")
+
+
+@respx.mock
+def test_post_sends_json():
+    route = respx.post(f"{BASE}/rpc").respond(json={"result": "0x1"})
+    client, _ = make_client()
+    assert client.post("/rpc", json={"method": "x"}) == {"result": "0x1"}
+    assert route.calls.last.request.content == b'{"method":"x"}'
+
+
+@respx.mock
+def test_budget_is_consumed_per_attempt():
+    respx.get(f"{BASE}/items").mock(side_effect=[httpx.Response(500), httpx.Response(200, json={})])
+    budget = CountingBudget(allowed=10)
+    client = JsonHttpClient(BASE, limiter=NoopLimiter(), budget=budget, sleep=lambda s: None)
+    client.get("/items")
+    assert budget.used == 2
+
+
+@respx.mock
+def test_exhausted_budget_stops_before_calling():
+    route = respx.get(f"{BASE}/items").respond(json={})
+    client = JsonHttpClient(BASE, limiter=NoopLimiter(), budget=CountingBudget(allowed=0))
+    with pytest.raises(BudgetExhausted):
+        client.get("/items")
+    assert route.call_count == 0

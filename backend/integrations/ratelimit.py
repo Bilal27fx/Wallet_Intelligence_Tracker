@@ -4,6 +4,8 @@ import time
 
 import redis
 
+from integrations.errors import BudgetExhausted
+
 # Réserve atomiquement le prochain créneau libre et renvoie l'attente nécessaire (secondes).
 _RESERVE_SLOT = """
 local now = tonumber(ARGV[1])
@@ -39,4 +41,34 @@ class RateLimiter:
 
 class NoopLimiter:
     def acquire(self) -> None:
+        return None
+
+
+class DailyBudget:
+    """Nombre maximal de requêtes par jour UTC, partagé entre workers (compteur Redis)."""
+
+    def __init__(self, client: redis.Redis, name: str, per_day: int, clock=time.time):
+        self._client = client
+        self._name = name
+        self._per_day = per_day
+        self._clock = clock
+
+    def _key(self) -> str:
+        return f"budget:{self._name}:{int(self._clock() // 86_400)}"
+
+    def consume(self) -> None:
+        key = self._key()
+        used = self._client.incr(key)
+        if used == 1:
+            self._client.expire(key, 2 * 86_400)
+        if used > self._per_day:
+            raise BudgetExhausted(f"{self._name} : budget de {self._per_day} requêtes/jour atteint")
+
+    def remaining(self) -> int:
+        used = int(self._client.get(self._key()) or 0)
+        return max(self._per_day - used, 0)
+
+
+class NoBudget:
+    def consume(self) -> None:
         return None

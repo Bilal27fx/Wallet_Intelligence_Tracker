@@ -19,3 +19,7 @@ class UpstreamError(IntegrationError):
 
 class TooManyTransfers(IntegrationError):
     """Le token dépasse le plafond de transferts autorisé."""
+
+
+class BudgetExhausted(IntegrationError):
+    """Le budget quotidien de requêtes du service est épuisé."""

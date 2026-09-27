@@ -25,6 +25,7 @@ def test_migration_creates_global_defaults():
         sniper_blocks=3,
         min_buy_usd=500.0,
         max_buyers=300,
+        explosion_window_hours=72,
     )
 
 

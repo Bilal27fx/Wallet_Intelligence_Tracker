@@ -90,3 +90,14 @@ Lancer le pipeline à la main :
     >>> run_discovery.delay()
 
 Tests contre les vraies API : `make test args="-m live integrations"`.
+
+## Qualification des wallets (v2)
+
+Chaque jour à 08:00 UTC (tâche `qualification-daily`) :
+
+1. **Pré-filtre HyperSync (gratuit)** sur les chaînes `prefilter_chains` (Base, Robinhood, BSC, Ethereum, Arc) + la chaîne où le wallet a été repéré : bot, inactif, farmer, MEV, exchange — mesures additionnées.
+2. **Historique Zerion 6 mois**, toutes chaînes EVM, pour les survivants : chaque mouvement avec son type, sa quantité, son prix et sa valeur au moment de la transaction. Reprise au curseur le lendemain si le budget est atteint.
+3. **Décision sur historique complet** : farmer / MEV revérifiés, liens forts (transfert après achat, gros transfert reçu en %), valeur `/portfolio` du wallet + de ses wallets liés directs, tags.
+4. **Mise à jour incrémentale** des wallets qualifiés tous les `history_refresh_days` jours.
+
+Ordre de traitement : wallets liés (1 appel), historiques en cours, nouveaux wallets par priorité. Budget Zerion : `zerion_daily_budget` (1 800/jour, plan Developer).

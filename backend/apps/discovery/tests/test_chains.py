@@ -1,6 +1,6 @@
 import pytest
 
-from apps.discovery.models import Chain
+from apps.discovery.models import Chain, PipelineSettings
 from apps.discovery.services.chains import sync_chains
 from apps.discovery.tests.fakes import FakeCoinGecko, FakeDirectory, FakeGeckoTerminal, FakeZerion
 
@@ -32,3 +32,18 @@ def test_sync_is_idempotent():
     run_sync()
     run_sync()
     assert Chain.objects.count() == 2
+
+
+def test_sync_stores_rpc_and_native_assets():
+    run_sync()
+    base = Chain.objects.get(gt_id="base")
+    assert base.rpc_url == "https://mainnet.base.org/"
+    assert (base.native_fungible_id, base.wrapped_fungible_id) == ("eth", "0xweth")
+    assert Chain.objects.get(gt_id="solana").rpc_url == ""
+
+
+def test_pipeline_settings_qualification_defaults():
+    cfg = PipelineSettings.load()
+    assert cfg.zerion_daily_budget == 1800
+    assert cfg.zerion_requests_per_min == 300
+    assert cfg.qualification_batch_size == 100
