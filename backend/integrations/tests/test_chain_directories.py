@@ -55,3 +55,42 @@ def test_hypersync_directory_keeps_evm_mainnets():
 
 def test_hypersync_url():
     assert hypersync_url(8453) == "https://8453.hypersync.xyz"
+
+
+@respx.mock
+def test_zerion_chains_reads_rpc_and_native_assets():
+    respx.get(f"{ZERION_URL}/chains/").respond(
+        json={
+            "data": [
+                {
+                    "id": "base",
+                    "attributes": {
+                        "external_id": "0x2105",
+                        "rpc": {
+                            "public_servers_url": ["wss://ws.base", "https://mainnet.base.org/"]
+                        },
+                    },
+                    "relationships": {
+                        "native_fungible": {"data": {"type": "fungibles", "id": "eth"}},
+                        "wrapped_native_fungible": {"data": {"type": "fungibles", "id": "0xweth"}},
+                    },
+                },
+                {"id": "solana", "attributes": {"external_id": None}},
+                {
+                    "id": "bare",
+                    "attributes": {"external_id": "0x1", "rpc": None},
+                    "relationships": {},
+                },
+            ]
+        }
+    )
+    client = ZerionClient(http(ZERION_URL))
+    [base, bare] = client.chains()
+    assert (base.zerion_id, base.evm_id, base.rpc_url) == (
+        "base",
+        8453,
+        "https://mainnet.base.org/",
+    )
+    assert (base.native_fungible_id, base.wrapped_fungible_id) == ("eth", "0xweth")
+    assert (bare.rpc_url, bare.native_fungible_id) == ("", "")
+    assert client.chain_ids() == {8453: "base", 1: "bare"}

@@ -38,6 +38,9 @@ class Chain(models.Model):
     evm_id = models.PositiveBigIntegerField(null=True, blank=True)
     zerion_id = models.CharField(max_length=64, blank=True, default="")
     hypersync_supported = models.BooleanField(default=False)
+    rpc_url = models.URLField(max_length=300, blank=True, default="")
+    native_fungible_id = models.CharField(max_length=100, blank=True, default="")
+    wrapped_fungible_id = models.CharField(max_length=100, blank=True, default="")
     is_enabled = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -110,6 +113,10 @@ class DetectionSettings(models.Model):
                 )
 
 
+def default_stablecoins() -> list[str]:
+    return ["USDC", "USDT", "DAI"]
+
+
 class PipelineSettings(models.Model):
     trending_pages = models.PositiveSmallIntegerField(default=10)
     volume_pages_per_chain = models.PositiveSmallIntegerField(default=3)
@@ -123,6 +130,15 @@ class PipelineSettings(models.Model):
     http_backoff_seconds = models.PositiveIntegerField(
         default=5, help_text="Attente avant la 1re nouvelle tentative, doublée à chaque essai."
     )
+    zerion_daily_budget = models.PositiveIntegerField(default=250)
+    zerion_requests_per_min = models.PositiveIntegerField(default=50)
+    stablecoin_symbols = models.JSONField(default=default_stablecoins)
+    extra_chains = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="gt_id des chaînes analysées en plus pour chaque wallet.",
+    )
+    qualification_batch_size = models.PositiveIntegerField(default=100)
 
     class Meta:
         verbose_name = "réglages du pipeline"
