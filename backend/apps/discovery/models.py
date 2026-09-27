@@ -38,7 +38,7 @@ class Chain(models.Model):
     evm_id = models.PositiveBigIntegerField(null=True, blank=True)
     zerion_id = models.CharField(max_length=64, blank=True, default="")
     hypersync_supported = models.BooleanField(default=False)
-    rpc_url = models.URLField(max_length=300, blank=True, default="")
+    rpc_url = models.CharField(max_length=300, blank=True, default="")
     native_fungible_id = models.CharField(max_length=100, blank=True, default="")
     wrapped_fungible_id = models.CharField(max_length=100, blank=True, default="")
     is_enabled = models.BooleanField(default=True)
