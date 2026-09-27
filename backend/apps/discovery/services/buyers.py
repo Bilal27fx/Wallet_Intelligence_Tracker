@@ -24,43 +24,51 @@ class BuyerStats:
     is_sniper: bool = False
 
 
-def aggregate_buyers(
-    transfers: list[Transfer],
-    *,
-    low_block: int,
-    peak_block: int,
-    pool_created_block: int,
-    candles: list[Candle],
-    decimals: int,
-    sniper_blocks: int,
-    min_buy_usd: float,
-    max_buyers: int,
-) -> list[BuyerStats]:
-    candle_times = [candle.ts for candle in candles]
+class BuyerAggregator:
+    """Totaux par acheteur alimentés page par page : la mémoire suit le nombre d'acheteurs."""
 
-    def price_at(ts: int) -> float:
-        index = bisect_right(candle_times, ts) - 1
-        return candles[max(index, 0)].close
+    def __init__(self, *, candles: list[Candle], decimals: int):
+        self._candles = candles
+        self._times = [candle.ts for candle in candles]
+        self._scale = 10**decimals
+        self.stats: dict[str, BuyerStats] = {}
 
-    scale = 10**decimals
-    stats: dict[str, BuyerStats] = {}
-    for transfer in sorted(transfers, key=lambda t: t.block):
-        if transfer.block > peak_block:
-            continue
+    def _price_at(self, ts: int) -> float:
+        index = bisect_right(self._times, ts) - 1
+        return self._candles[max(index, 0)].close
+
+    def add(self, transfers: list[Transfer]) -> None:
+        """Passe 1 (fenêtre d'achat → creux) : achats et ventes."""
+        for transfer in sorted(transfers, key=lambda t: t.block):
+            signer = transfer.tx_from
+            if transfer.recipient == signer and transfer.sender not in (signer, ZERO_ADDRESS):
+                buyer = self.stats.get(signer)
+                if buyer is None:
+                    buyer = self.stats[signer] = BuyerStats(
+                        signer, transfer.block, transfer.timestamp
+                    )
+                buyer.bought_amount += transfer.amount
+                price = self._price_at(transfer.timestamp)
+                buyer.bought_usd += transfer.amount / self._scale * price
+            else:
+                self._count_sell(transfer)
+
+    def add_sells(self, transfers: list[Transfer]) -> None:
+        """Passe 2 (creux → pic) : ventes des acheteurs connus."""
+        for transfer in transfers:
+            self._count_sell(transfer)
+
+    def _count_sell(self, transfer: Transfer) -> None:
         signer = transfer.tx_from
-        is_buy = transfer.recipient == signer and transfer.sender not in (signer, ZERO_ADDRESS)
-        if is_buy and transfer.block <= low_block:
-            buyer = stats.get(signer)
-            if buyer is None:
-                buyer = stats[signer] = BuyerStats(signer, transfer.block, transfer.timestamp)
-            buyer.bought_amount += transfer.amount
-            buyer.bought_usd += transfer.amount / scale * price_at(transfer.timestamp)
-        elif transfer.sender == signer and transfer.recipient != signer and signer in stats:
-            stats[signer].sold_amount += transfer.amount
+        if transfer.sender == signer and transfer.recipient != signer and signer in self.stats:
+            self.stats[signer].sold_amount += transfer.amount
 
-    kept = [buyer for buyer in stats.values() if buyer.bought_usd >= min_buy_usd]
-    for buyer in kept:
-        buyer.bought_usd = round(buyer.bought_usd, 2)
-        buyer.is_sniper = buyer.first_buy_block - pool_created_block <= sniper_blocks
-    kept.sort(key=lambda buyer: buyer.bought_usd, reverse=True)
-    return kept[:max_buyers] if max_buyers > 0 else kept
+    def select(
+        self, *, pool_created_block: int, sniper_blocks: int, min_buy_usd: float, max_buyers: int
+    ) -> list[BuyerStats]:
+        kept = [buyer for buyer in self.stats.values() if buyer.bought_usd >= min_buy_usd]
+        for buyer in kept:
+            buyer.bought_usd = round(buyer.bought_usd, 2)
+            buyer.is_sniper = buyer.first_buy_block - pool_created_block <= sniper_blocks
+        kept.sort(key=lambda buyer: buyer.bought_usd, reverse=True)
+        return kept[:max_buyers] if max_buyers > 0 else kept

@@ -98,9 +98,10 @@ class FakeZerion:
 
 
 class FakeHyperSync:
-    def __init__(self, transfers=None, error=None):
+    def __init__(self, transfers=None, error=None, page_size=2):
         self._transfers = transfers
         self._error = error
+        self.page_size = page_size
         self.transfer_calls = []
 
     def height(self):
@@ -109,10 +110,19 @@ class FakeHyperSync:
     def block_timestamp(self, number):
         return GENESIS_TS + number * BLOCK_TIME
 
-    def transfers(self, token, from_block, to_block, max_transfers):
-        self.transfer_calls.append((token, from_block, to_block, max_transfers))
+    def transfer_pages(self, token, from_block, to_block, senders=None):
+        self.transfer_calls.append((token, from_block, to_block, senders))
         if self._error:
             raise self._error
+        selected = [
+            t
+            for t in self._all_transfers()
+            if from_block <= t.block < to_block and (senders is None or t.sender in senders)
+        ]
+        for start in range(0, len(selected), self.page_size):
+            yield selected[start : start + self.page_size]
+
+    def _all_transfers(self):
         if self._transfers is not None:
             return self._transfers
         start = int(POOL_CREATED.timestamp())

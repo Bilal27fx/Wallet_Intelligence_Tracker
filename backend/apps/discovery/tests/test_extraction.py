@@ -2,20 +2,29 @@ from decimal import Decimal
 
 import pytest
 
-from apps.discovery.models import Candidate, EarlyBuyer, PipelineSettings, Wallet
+from apps.discovery.models import (
+    Candidate,
+    DetectionSettings,
+    EarlyBuyer,
+    Explosion,
+    PipelineSettings,
+    Wallet,
+)
 from apps.discovery.services.analysis import analyze_candidate
 from apps.discovery.services.extraction import extract_buyers
 from apps.discovery.tests.factories import make_candidate, make_chain, make_token
 from apps.discovery.tests.fakes import (
     ALICE,
+    HOUR,
     NOW,
+    POOL_CREATED,
     SNIPER,
     TOKEN,
     UNIT,
     FakeGeckoTerminal,
     FakeHyperSync,
+    block_of,
 )
-from integrations.errors import TooManyTransfers
 
 pytestmark = pytest.mark.django_db
 
@@ -56,22 +65,42 @@ def test_stores_significant_eoa_buyers(confirmed):
     assert buyers[SNIPER].bought_usd == Decimal("2000.00")
 
 
-def test_queries_transfers_from_pool_creation_to_peak(confirmed):
+def test_two_passes_buys_to_trough_then_sells_of_kept_buyers(confirmed):
     hypersync = FakeHyperSync()
     extract(confirmed, hypersync)
-    token, from_block, to_block, cap = hypersync.transfer_calls[0]
-    assert (token, from_block) == (TOKEN, 500)
-    assert to_block == confirmed.explosion.peak_block + 1
-    assert cap == PipelineSettings.load().max_transfers_per_token
+    explosion = confirmed.explosion
+    assert hypersync.transfer_calls == [
+        (TOKEN, 500, explosion.trough_block + 1, None),
+        (TOKEN, explosion.trough_block + 1, explosion.peak_block + 1, sorted([ALICE, SNIPER])),
+    ]
+    explosion.refresh_from_db()
+    assert explosion.extraction_status == Explosion.Extraction.COMPLETE
 
 
-def test_too_many_transfers_rejects(confirmed):
-    assert extract(confirmed, FakeHyperSync(error=TooManyTransfers("trop"))) == 0
-    confirmed.refresh_from_db()
-    assert (confirmed.status, confirmed.rejection_reason) == (
-        Candidate.Status.REJECTED,
-        "too_many_transfers",
-    )
+def test_sell_pass_is_batched(confirmed):
+    cfg = PipelineSettings.load()
+    cfg.sell_pass_batch_size = 1
+    cfg.save()
+    hypersync = FakeHyperSync()
+    extract(confirmed, hypersync)
+    assert [call[3] for call in hypersync.transfer_calls[1:]] == [[SNIPER], [ALICE]]
+
+
+def test_transfer_guard_keeps_partial_buyers(confirmed):
+    cfg = PipelineSettings.load()
+    cfg.max_transfers_per_token = 2
+    cfg.save()
+    assert extract(confirmed) == 2
+    confirmed.explosion.refresh_from_db()
+    assert confirmed.explosion.extraction_status == Explosion.Extraction.PARTIAL
+
+
+def test_buyer_window_limits_buy_pass(confirmed):
+    DetectionSettings.objects.filter(chain=None).update(buyer_window_hours=9)
+    hypersync = FakeHyperSync()
+    assert extract(confirmed, hypersync) == 0
+    start = int(POOL_CREATED.timestamp()) + HOUR
+    assert hypersync.transfer_calls[0][1] == block_of(start)
 
 
 def test_wallets_are_shared_between_explosions(confirmed):

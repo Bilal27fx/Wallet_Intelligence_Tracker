@@ -1,4 +1,4 @@
-from apps.discovery.services.buyers import ZERO_ADDRESS, aggregate_buyers
+from apps.discovery.services.buyers import ZERO_ADDRESS, BuyerAggregator
 from integrations.geckoterminal import Candle
 from integrations.hypersync import Transfer
 
@@ -26,19 +26,26 @@ def buy(wallet: str, block: int, tokens: int, ts: int = 10, sender: str = POOL) 
     )
 
 
-def run(transfers, **overrides):
-    params = dict(
-        low_block=1000,
-        peak_block=2000,
-        pool_created_block=100,
-        candles=CANDLES,
-        decimals=18,
-        sniper_blocks=3,
-        min_buy_usd=500,
-        max_buyers=300,
+def sell(wallet: str, block: int, tokens: int) -> Transfer:
+    return Transfer(
+        block=block,
+        timestamp=block,
+        tx_from=wallet,
+        sender=wallet,
+        recipient=POOL,
+        amount=tokens * UNIT,
     )
+
+
+def run(transfers, sells=(), **overrides):
+    params = dict(pool_created_block=100, sniper_blocks=3, min_buy_usd=500, max_buyers=300)
     params.update(overrides)
-    return aggregate_buyers(transfers, **params)
+    aggregator = BuyerAggregator(candles=CANDLES, decimals=18)
+    for transfer in transfers:
+        aggregator.add([transfer])  # une page par transfert
+    kept = aggregator.select(**params)
+    aggregator.add_sells(list(sells))
+    return kept
 
 
 def test_buy_is_signer_receiving_tokens():
@@ -59,8 +66,9 @@ def test_usd_uses_candle_price_at_buy_time():
     assert alice.bought_usd == 300 * 1.0 + 300 * 2.0
 
 
-def test_buys_after_low_block_are_not_early():
-    assert run([buy(ALICE, 1001, 10_000)]) == []
+def test_buys_accumulate_across_pages():
+    [alice] = run([buy(ALICE, 200, 300), buy(ALICE, 300, 300)])
+    assert (alice.first_buy_block, alice.bought_amount) == (200, 600 * UNIT)
 
 
 def test_airdrops_and_mints_are_ignored():
@@ -83,14 +91,13 @@ def test_airdrops_and_mints_are_ignored():
     assert run([airdrop, mint]) == []
 
 
-def test_tokens_sent_before_peak_count_as_sold():
-    sell = Transfer(
-        block=1500, timestamp=1500, tx_from=ALICE, sender=ALICE, recipient=POOL, amount=200 * UNIT
-    )
-    after_peak = Transfer(
-        block=2500, timestamp=2500, tx_from=ALICE, sender=ALICE, recipient=POOL, amount=100 * UNIT
-    )
-    [alice] = run([buy(ALICE, 200, 600), sell, after_peak])
+def test_sells_before_trough_count():
+    [alice] = run([buy(ALICE, 200, 600), sell(ALICE, 250, 100)])
+    assert alice.sold_amount == 100 * UNIT
+
+
+def test_second_pass_sells_update_kept_buyers_only():
+    [alice] = run([buy(ALICE, 200, 600)], sells=[sell(ALICE, 1500, 200), sell(FRIEND, 1500, 50)])
     assert alice.sold_amount == 200 * UNIT
 
 
