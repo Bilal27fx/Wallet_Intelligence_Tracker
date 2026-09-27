@@ -7,7 +7,7 @@ from apps.wallets.services.classify import BUY, RECEIVE, SELL, SEND
 
 @dataclass(frozen=True)
 class TradeRecord:
-    chain_id: int
+    chain_id: str
     token: str
     kind: str
     amount: int

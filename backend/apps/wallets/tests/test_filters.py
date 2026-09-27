@@ -1,7 +1,6 @@
 import pytest
 
 from apps.wallets.services.filters import (
-    ChainActivity,
     farmer_reason,
     history_reason,
     mev_ratio,
@@ -18,23 +17,17 @@ def rec(kind, token, block):
 
 
 @pytest.mark.parametrize(
-    ("activities", "source", "reason"),
+    ("txs_7d", "txs_active", "source", "reason"),
     [
-        ([ChainActivity(10, 10)], "early_buyer", None),
-        ([ChainActivity(1401, 10)], "early_buyer", "bot_frequency"),
-        ([ChainActivity(1401, 10)], "linked", "bot_frequency"),
-        ([ChainActivity(3, 2)], "early_buyer", "inactive"),
-        ([ChainActivity(3, 2)], "linked", None),
-        ([ChainActivity(3, 2), ChainActivity(9, 9)], "early_buyer", None),
+        (10, 10, "early_buyer", None),
+        (351, 10, "early_buyer", "bot_frequency"),
+        (351, 10, "linked", "bot_frequency"),
+        (3, 2, "early_buyer", "inactive"),
+        (3, 2, "linked", None),
     ],
 )
-def test_prefilter(activities, source, reason):
-    assert prefilter_reason([(a, T) for a in activities], source) == reason
-
-
-def test_prefilter_uses_each_chain_threshold():
-    strict = make_thresholds(max_txs_per_day=1)
-    assert prefilter_reason([(ChainActivity(10, 10), strict)], "early_buyer") == "bot_frequency"
+def test_prefilter_on_totals(txs_7d, txs_active, source, reason):
+    assert prefilter_reason(txs_7d, txs_active, make_thresholds(), source) == reason
 
 
 def test_farmer():

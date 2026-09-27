@@ -1,4 +1,8 @@
-from apps.wallets.services.entities import transfer_after_buy_targets
+from apps.wallets.services.entities import (
+    ZERO_ADDRESS,
+    big_receive_targets,
+    transfer_after_buy_targets,
+)
 from apps.wallets.services.exchanges import forwarding
 from apps.wallets.services.positions import TradeRecord
 from integrations.hypersync import WalletTransfer
@@ -67,3 +71,24 @@ def test_targets_receiving_most_of_a_token():
     assert transfer_after_buy_targets(records, 70) == {
         (1, "0xvault"): {"token": "0xa", "pct": 80.0}
     }
+
+
+def usd_rec(kind, usd, counterparty, token="0xt"):
+    return TradeRecord("base", token, kind, 1, usd, 1, 1, counterparty)
+
+
+def test_big_receive_is_a_share_of_all_inflows():
+    records = [
+        usd_rec("buy", 1000.0, "0xpool"),
+        usd_rec("receive", 3000.0, "0xbig"),
+        usd_rec("receive", 50.0, "0xdust"),
+        usd_rec("receive", 900.0, ZERO_ADDRESS),
+        usd_rec("receive", None, "0xunknown"),
+    ]
+    assert big_receive_targets(records, 30) == {
+        ("base", "0xbig"): {"pct": 60.61, "value_usd": 3000.0}
+    }
+
+
+def test_no_inflow_no_target():
+    assert big_receive_targets([usd_rec("send", 10.0, "0xa")], 30) == {}

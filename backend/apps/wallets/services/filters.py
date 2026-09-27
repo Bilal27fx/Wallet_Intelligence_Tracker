@@ -1,7 +1,5 @@
 """Filtres anti-bruit. Fonctions pures."""
 
-from dataclasses import dataclass
-
 from apps.wallets.services.classify import BUY, SELL
 from apps.wallets.services.positions import TradeRecord
 from apps.wallets.services.settings import QualificationThresholds
@@ -9,22 +7,13 @@ from apps.wallets.services.settings import QualificationThresholds
 EARLY_BUYER = "early_buyer"
 
 
-@dataclass(frozen=True)
-class ChainActivity:
-    txs_7d: int
-    txs_active: int
-
-
 def prefilter_reason(
-    checks: list[tuple[ChainActivity, QualificationThresholds]], source: str
+    txs_7d: int, txs_active: int, t: QualificationThresholds, source: str
 ) -> str | None:
-    if any(activity.txs_7d > t.max_txs_per_day * 7 for activity, t in checks):
+    """Mesures additionnées sur les chaînes du pré-filtre."""
+    if txs_7d > t.max_txs_per_day * 7:
         return "bot_frequency"
-    if (
-        source == EARLY_BUYER
-        and checks
-        and all(activity.txs_active < t.min_txs_active for activity, t in checks)
-    ):
+    if source == EARLY_BUYER and txs_active < t.min_txs_active:
         return "inactive"
     return None
 

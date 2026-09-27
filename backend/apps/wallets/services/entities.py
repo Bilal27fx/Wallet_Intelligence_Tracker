@@ -39,3 +39,29 @@ def add_link(from_address: str, to_address: str, kind: str, evidence: dict) -> N
     WalletLink.objects.get_or_create(
         from_wallet=source, to_wallet=target, kind=kind, defaults={"evidence": evidence}
     )
+
+
+ZERO_ADDRESS = "0x" + "0" * 40
+
+
+def big_receive_targets(
+    records: list[TradeRecord], threshold_pct: float
+) -> dict[tuple[str, str], dict]:
+    """Expéditeurs dont les envois représentent ≥ threshold % des entrées ($) du wallet. Pur."""
+    inflow = sum(r.usd or 0.0 for r in records if r.kind in (BUY, RECEIVE))
+    if inflow <= 0:
+        return {}
+    received: dict[str, float] = defaultdict(float)
+    chain_of: dict[str, str] = {}
+    for record in records:
+        if record.kind == RECEIVE and record.usd and record.counterparty not in ("", ZERO_ADDRESS):
+            received[record.counterparty] += record.usd
+            chain_of.setdefault(record.counterparty, record.chain_id)
+    return {
+        (chain_of[sender], sender): {
+            "pct": round(value * 100 / inflow, 2),
+            "value_usd": round(value, 2),
+        }
+        for sender, value in received.items()
+        if value * 100 >= threshold_pct * inflow
+    }
