@@ -16,6 +16,7 @@ from apps.wallets.services.qualification import (
     qualify_wallet,
     refresh_wallet,
 )
+from apps.wallets.services.raw import refresh_token_info
 from integrations.errors import BudgetExhausted
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,16 @@ def qualify_wallets_task() -> dict:
     logger.info(
         "%s nouveaux profils, %s programmés, %s mises à jour", created, len(ids), len(refresh)
     )
+    refresh_token_info_task.delay()
     return {"new_profiles": created, "scheduled": len(ids), "refresh": len(refresh)}
+
+
+@shared_task
+def refresh_token_info_task() -> int:
+    cfg = PipelineSettings.load()
+    saved = refresh_token_info(clients.zerion(cfg), timezone.now(), cfg)
+    logger.info("%s tokens décrits (métadonnées Zerion)", saved)
+    return saved
 
 
 def _run(profile_id: int, action, allowed) -> str:

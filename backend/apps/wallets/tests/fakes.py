@@ -10,6 +10,7 @@ from integrations.hypersync import Funding, WalletTransfer
 from integrations.zerion import (
     NATIVE,
     Portfolio,
+    TokenMeta,
     TransactionsPage,
     ZerionTransaction,
     ZerionTransfer,
@@ -176,8 +177,15 @@ def buyer_zerion_history(send_to: str = VAULT) -> list[ZerionTransaction]:
     ]
 
 
+def meta_for(address, chain="base"):
+    return TokenMeta(
+        "fid", "TKA", "Token A", False, 1_000_000.0, 900_000.0, {chain: (address, 18)}, {}
+    )
+
+
 class FakeZerion:
-    def __init__(self, histories=None, portfolios=None, page_size=3, budget=None):
+    def __init__(self, histories=None, portfolios=None, page_size=3, budget=None, metas=None):
+        self.metas = metas or {}
         self.histories = histories if histories is not None else {BUYER: buyer_zerion_history()}
         self.portfolios = (
             portfolios
@@ -199,6 +207,10 @@ class FakeZerion:
         start = int(cursor or 0)
         end = start + self.page_size
         return TransactionsPage(txs[start:end], str(end) if end < len(txs) else None)
+
+    def token_metadata(self, implementations):
+        self._spend("token_metadata")
+        return list({id(m): m for m in (self.metas.get(i) for i in implementations) if m}.values())
 
     def portfolio(self, address):
         self._spend("portfolio")

@@ -17,9 +17,5 @@ class UpstreamError(IntegrationError):
     """Réponse invalide ou erreur serveur persistante."""
 
 
-class TooManyTransfers(IntegrationError):
-    """Le token dépasse le plafond de transferts autorisé."""
-
-
 class BudgetExhausted(IntegrationError):
     """Le budget quotidien de requêtes du service est épuisé."""

@@ -134,6 +134,9 @@ class TokenTrade(models.Model):
     counterparty = models.CharField(max_length=42, blank=True, default="")
     block = models.PositiveBigIntegerField(null=True, blank=True)
     mined_at = models.DateTimeField()
+    is_internal = models.BooleanField(
+        default=False, help_text="Mouvement entre deux wallets de la même entité."
+    )
 
     class Meta:
         constraints = [
@@ -186,12 +189,21 @@ class WalletLink(models.Model):
     class Kind(models.TextChoices):
         TRANSFER_AFTER_BUY = "transfer_after_buy", "Transfert après achat"
         BIG_RECEIVE = "big_receive", "Gros transfert reçu"
+        TRANSFER_TO_VAULT = "transfer_to_vault", "Transfert vers un coffre (on-chain)"
         FUNDING = "funding", "Financement initial (information)"
+
+    class LinkSource(models.TextChoices):
+        HYPERSYNC = "hypersync", "HyperSync"
+        ZERION = "zerion", "Zerion"
 
     from_wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="links_out")
     to_wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="links_in")
     kind = models.CharField(max_length=24, choices=Kind.choices)
     evidence = models.JSONField(default=dict, blank=True)
+    source = models.CharField(max_length=16, choices=LinkSource.choices, default=LinkSource.ZERION)
+    rejected = models.BooleanField(
+        default=False, help_text="Rattachement refusé dans l'admin : jamais recréé."
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -205,7 +217,65 @@ class WalletLink(models.Model):
         return f"{self.from_wallet} → {self.to_wallet} ({self.kind})"
 
 
-STRONG_LINKS = (WalletLink.Kind.TRANSFER_AFTER_BUY, WalletLink.Kind.BIG_RECEIVE)
+STRONG_LINKS = (
+    WalletLink.Kind.TRANSFER_AFTER_BUY,
+    WalletLink.Kind.BIG_RECEIVE,
+    WalletLink.Kind.TRANSFER_TO_VAULT,
+)
+
+
+class TokenInfo(models.Model):
+    chain = models.CharField(max_length=64)
+    address = models.CharField(max_length=66)
+    fungible_id = models.CharField(max_length=100, blank=True, default="")
+    symbol = models.CharField(max_length=64, blank=True, default="")
+    name = models.CharField(max_length=200, blank=True, default="")
+    decimals = models.PositiveSmallIntegerField(null=True, blank=True)
+    total_supply = models.DecimalField(max_digits=60, decimal_places=18, null=True, blank=True)
+    circulating_supply = models.DecimalField(
+        max_digits=60, decimal_places=18, null=True, blank=True
+    )
+    verified = models.BooleanField(default=False)
+    raw = models.JSONField(default=dict, blank=True)
+    fetched_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["chain", "address"], name="wallets_unique_token_info")
+        ]
+
+    def __str__(self):
+        return f"{self.symbol or self.address} ({self.chain})"
+
+
+class PortfolioSnapshot(models.Model):
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="portfolios")
+    fetched_at = models.DateTimeField()
+    total_usd = _usd(null=True, blank=True)
+    raw = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["wallet", "fetched_at"], name="wallets_portfolio_date")]
+
+    def __str__(self):
+        return f"{self.wallet} @ {self.fetched_at:%Y-%m-%d %H:%M}"
+
+
+class PortfolioPosition(models.Model):
+    snapshot = models.ForeignKey(
+        PortfolioSnapshot, on_delete=models.CASCADE, related_name="positions"
+    )
+    chain = models.CharField(max_length=64)
+    token_address = models.CharField(max_length=66)
+    fungible_id = models.CharField(max_length=100, blank=True, default="")
+    symbol = models.CharField(max_length=64, blank=True, default="")
+    position_type = models.CharField(max_length=32, blank=True, default="")
+    quantity = models.DecimalField(max_digits=60, decimal_places=18)
+    price_usd = models.DecimalField(max_digits=40, decimal_places=18, null=True, blank=True)
+    value_usd = _usd(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.symbol or self.token_address} ({self.chain})"
 
 
 class KnownAddressQuerySet(models.QuerySet):

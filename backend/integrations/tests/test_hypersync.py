@@ -1,8 +1,5 @@
 from types import SimpleNamespace
 
-import pytest
-
-from integrations.errors import TooManyTransfers
 from integrations.hypersync import TRANSFER_TOPIC, HyperSyncClient, Transfer
 from integrations.ratelimit import NoopLimiter
 
@@ -18,6 +15,7 @@ def topic(address: str) -> str:
 def log(block: int, tx: str, sender: str, recipient: str, amount: int):
     return SimpleNamespace(
         block_number=block,
+        log_index=block,
         transaction_hash=tx,
         data=hex(amount),
         topics=[TRANSFER_TOPIC, topic(sender), topic(recipient)],
@@ -36,9 +34,11 @@ class FakeInner:
         self.pages = list(pages)
         self.height = height
         self.from_blocks: list[int] = []
+        self.queries = []
 
     async def get(self, query):
         self.from_blocks.append(query.from_block)
+        self.queries.append(query)
         return self.pages.pop(0)
 
     async def get_height(self):
@@ -61,7 +61,11 @@ def test_block_timestamp_parses_hex_and_caches():
     assert inner.from_blocks == [5]
 
 
-def test_transfers_follows_pagination_and_joins_tx_sender():
+def collect(client, *args, **kwargs):
+    return [list(page) for page in client.transfer_pages(*args, **kwargs)]
+
+
+def test_transfer_pages_follow_pagination_and_join_tx_sender():
     inner = FakeInner(
         [
             page(
@@ -92,35 +96,28 @@ def test_transfers_follows_pagination_and_joins_tx_sender():
             ),
         ]
     )
-    transfers = make_client(inner).transfers("0xtoken", 50, 200, max_transfers=10)
-    assert transfers == [
-        Transfer(
-            block=100, timestamp=100, tx_from=ALICE, sender=POOL, recipient=ALICE, amount=1000
-        ),
-        Transfer(block=160, timestamp=200, tx_from=ALICE, sender=ALICE, recipient=BOB, amount=400),
+    pages = collect(make_client(inner), "0xtoken", 50, 200)
+    assert pages == [
+        [Transfer(100, 100, ALICE, POOL, ALICE, 1000, tx_hash="0xt1", log_index=100)],
+        [Transfer(160, 200, ALICE, ALICE, BOB, 400, tx_hash="0xt2", log_index=160)],
     ]
     assert inner.from_blocks == [50, 150]
+    assert inner.queries[0].logs[0].topics == [[TRANSFER_TOPIC]]
 
 
-def test_transfers_raises_when_over_cap():
-    inner = FakeInner(
-        [
-            page(
-                200,
-                logs=[log(100, "0xt1", POOL, ALICE, 1), log(101, "0xt1", POOL, ALICE, 1)],
-                txs=[SimpleNamespace(hash="0xt1", from_=ALICE)],
-                blocks=[
-                    SimpleNamespace(number=100, timestamp=1),
-                    SimpleNamespace(number=101, timestamp=2),
-                ],
-            )
-        ]
-    )
-    with pytest.raises(TooManyTransfers):
-        make_client(inner).transfers("0xtoken", 0, 200, max_transfers=1)
+def test_transfer_pages_filter_on_senders():
+    inner = FakeInner([page(200)])
+    collect(make_client(inner), "0xtoken", 0, 200, senders=[ALICE, BOB])
+    assert inner.queries[0].logs[0].topics == [[TRANSFER_TOPIC], [topic(ALICE), topic(BOB)]]
 
 
-def test_transfers_accepts_real_topics_padding():
+def test_transfer_pages_empty_range_makes_no_call():
+    inner = FakeInner([])
+    assert collect(make_client(inner), "0xtoken", 200, 200) == []
+    assert inner.from_blocks == []
+
+
+def test_transfer_pages_accept_real_topics_padding():
     # HyperSync renvoie toujours 4 topics, complétés par None.
     padded = log(100, "0xt1", POOL, ALICE, 7)
     padded.topics = padded.topics + [None]
@@ -134,5 +131,24 @@ def test_transfers_accepts_real_topics_padding():
             )
         ]
     )
-    [transfer] = make_client(inner).transfers("0xtoken", 0, 200, max_transfers=10)
+    [[transfer]] = collect(make_client(inner), "0xtoken", 0, 200)
     assert transfer.amount == 7
+
+
+def test_transfer_pages_filter_on_participants():
+    inner = FakeInner([page(200)])
+    collect(make_client(inner), "0xtoken", 0, 200, participants=[ALICE])
+    assert [selection.topics for selection in inner.queries[0].logs] == [
+        [[TRANSFER_TOPIC], [topic(ALICE)]],
+        [[TRANSFER_TOPIC], [], [topic(ALICE)]],
+    ]
+
+
+def test_tx_counts_counts_each_signer_in_one_query():
+    txs = [SimpleNamespace(from_=a) for a in (ALICE, ALICE.upper().replace("0X", "0x"), BOB)]
+    inner = FakeInner([page(120, txs=txs[:2]), page(200, txs=txs[2:])])
+    counts = make_client(inner).tx_counts([ALICE, BOB], 100, 200)
+    assert counts == {ALICE: 2, BOB: 1}
+    assert inner.from_blocks == [100, 120]
+    [selection] = inner.queries[0].transactions
+    assert selection.from_ == [ALICE, BOB]

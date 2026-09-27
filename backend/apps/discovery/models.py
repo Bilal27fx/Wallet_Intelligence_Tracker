@@ -4,6 +4,8 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
+from integrations.zerion import OPERATION_TYPES
+
 THRESHOLD_FIELDS = (
     "min_change_24h_pct",
     "min_liquidity_usd",
@@ -15,11 +17,19 @@ THRESHOLD_FIELDS = (
     "min_multiplier",
     "min_retention_pct",
     "confirmation_hours",
-    "confirmation_timeout_hours",
     "sniper_blocks",
     "min_buy_usd",
     "max_buyers",
     "explosion_window_hours",
+    "maturity_hours",
+    "breakout_multiplier",
+    "buyer_window_hours",
+    "min_score",
+    "max_multiplier",
+    "hub_min_senders",
+    "vault_follow_depth",
+    "bot_window_days",
+    "vault_min_pct",
 )
 CLOSED_STATUSES = ("rejected", "buyers_extracted")
 UINT256_DIGITS = 78
@@ -80,16 +90,72 @@ class DetectionSettings(models.Model):
     min_multiplier = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     min_retention_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     confirmation_hours = models.PositiveIntegerField(null=True, blank=True)
-    confirmation_timeout_hours = models.PositiveIntegerField(null=True, blank=True)
     sniper_blocks = models.PositiveIntegerField(null=True, blank=True)
-    min_buy_usd = _usd()
+    min_buy_usd = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Position minimum détenue au creux ($) pour retenir un acheteur.",
+    )
     max_buyers = models.PositiveIntegerField(
         null=True, blank=True, help_text="0 = pas de plafond. Vide = valeur globale."
     )
     explosion_window_hours = models.PositiveIntegerField(
         null=True,
         blank=True,
-        help_text="Le point bas et le pic doivent se trouver dans ces dernières heures.",
+        help_text="Le pic doit se trouver dans ces dernières heures (ignoré pour un ajout manuel).",
+    )
+    maturity_hours = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Âge du token au creux à partir duquel une vague compte pleinement. "
+        "0 = pas de pondération.",
+    )
+    breakout_multiplier = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Une vague précédente retombée coupe le creux si elle a dépassé ce multiple.",
+    )
+    buyer_window_hours = models.PositiveIntegerField(
+        null=True, blank=True, help_text="Heures d'achat avant le creux. 0 = depuis le lancement."
+    )
+    min_score = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Score minimum (multiplicateur × maturité) : écarte les pumps de lancement.",
+    )
+    max_multiplier = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Au-delà, la vague est une anomalie (pool vidé, prix ~0). 0 = pas de plafond.",
+    )
+    hub_min_senders = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Un destinataire alimenté par au moins autant d'expéditeurs est un hub "
+        "(router, exchange) : lui envoyer = sortie.",
+    )
+    vault_follow_depth = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="Niveaux de coffres suivis pendant la montée."
+    )
+    bot_window_days = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Jours récents sur lesquels on mesure l'activité (tx signées/jour).",
+    )
+    vault_min_pct = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Envoi minimum (% de ce que l'expéditeur a reçu) qui crée un coffre.",
     )
 
     class Meta:
@@ -130,10 +196,13 @@ class PipelineSettings(models.Model):
     trending_pages = models.PositiveSmallIntegerField(default=10)
     volume_pages_per_chain = models.PositiveSmallIntegerField(default=3)
     candidate_cooldown_hours = models.PositiveIntegerField(default=72)
-    max_transfers_per_token = models.PositiveIntegerField(default=500_000)
+    max_transfers_per_token = models.PositiveIntegerField(default=2_000_000)
     max_attempts = models.PositiveSmallIntegerField(default=3)
     gecko_requests_per_min = models.PositiveIntegerField(default=30)
     hypersync_requests_per_min = models.PositiveIntegerField(default=60)
+    hypersync_timeout_seconds = models.PositiveIntegerField(
+        default=30, help_text="Délai max d'une requête HyperSync avant nouvelle tentative."
+    )
     http_timeout_seconds = models.PositiveIntegerField(default=15)
     http_max_retries = models.PositiveSmallIntegerField(default=3)
     http_backoff_seconds = models.PositiveIntegerField(
@@ -151,6 +220,21 @@ class PipelineSettings(models.Model):
     )
     history_refresh_days = models.PositiveIntegerField(default=7)
     qualification_batch_size = models.PositiveIntegerField(default=100)
+    sell_pass_batch_size = models.PositiveIntegerField(
+        default=500, help_text="Adresses d'acheteurs par requête de la passe des ventes."
+    )
+    zerion_operation_types = models.CharField(
+        max_length=300,
+        default=OPERATION_TYPES,
+        help_text="Types de transactions Zerion récupérés (séparés par des virgules).",
+    )
+    token_info_refresh_days = models.PositiveIntegerField(default=30)
+    rug_priority_weight = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        default=0.2,
+        help_text="Poids d'une explosion « rug » dans la priorité de qualification.",
+    )
 
     class Meta:
         verbose_name = "réglages du pipeline"
@@ -241,20 +325,54 @@ class Candidate(models.Model):
 
 
 class Explosion(models.Model):
+    class Retention(models.TextChoices):
+        PENDING = "pending", "À mesurer"
+        HELD = "held", "Tenue"
+        RUG = "rug", "Rug"
+
+    class Extraction(models.TextChoices):
+        COMPLETE = "complete", "Complète"
+        PARTIAL = "partial", "Partielle"
+
     candidate = models.OneToOneField(Candidate, on_delete=models.CASCADE, related_name="explosion")
-    low_block = models.PositiveBigIntegerField()
-    low_at = models.DateTimeField()
+    trough_block = models.PositiveBigIntegerField()
+    trough_at = models.DateTimeField()
     peak_block = models.PositiveBigIntegerField()
     peak_at = models.DateTimeField()
+    peak_price = models.FloatField(null=True, blank=True)
     multiplier = models.DecimalField(max_digits=12, decimal_places=2)
-    retention_pct = models.DecimalField(max_digits=7, decimal_places=2)
+    score = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    retention_pct = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    retention_status = models.CharField(
+        max_length=16, choices=Retention.choices, default=Retention.PENDING
+    )
+    extraction_status = models.CharField(
+        max_length=16, choices=Extraction.choices, blank=True, default=""
+    )
 
     def __str__(self):
         return f"{self.candidate.token} ×{self.multiplier}"
 
 
+class Entity(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    merged_into = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="absorbed"
+    )
+
+    class Meta:
+        verbose_name_plural = "entities"
+
+    def __str__(self):
+        return f"Entité {self.pk}"
+
+
 class Wallet(models.Model):
     address = models.CharField(max_length=42, unique=True)
+    entity = models.ForeignKey(
+        Entity, null=True, blank=True, on_delete=models.SET_NULL, related_name="wallets"
+    )
 
     def __str__(self):
         return self.address
@@ -267,8 +385,32 @@ class EarlyBuyer(models.Model):
     first_buy_at = models.DateTimeField()
     bought_amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0)
     bought_usd = models.DecimalField(max_digits=20, decimal_places=2)
-    sold_amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, default=0)
+    held_amount = models.DecimalField(
+        max_digits=UINT256_DIGITS,
+        decimal_places=0,
+        default=0,
+        help_text="Tokens détenus au creux (achetés − revendus avant le creux).",
+    )
+    held_usd = models.DecimalField(
+        max_digits=20, decimal_places=2, default=0, help_text="Position au creux, au prix du creux."
+    )
+    sold_amount = models.DecimalField(
+        max_digits=UINT256_DIGITS,
+        decimal_places=0,
+        default=0,
+        help_text="Tokens revendus pendant la montée (creux → pic).",
+    )
     is_sniper = models.BooleanField(default=False)
+    entity = models.ForeignKey(
+        Entity, null=True, blank=True, on_delete=models.SET_NULL, related_name="early_buys"
+    )
+    inherited_amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0, default=0)
+    inherited_usd = models.DecimalField(
+        max_digits=20, decimal_places=2, default=0, help_text="Prix de revient hérité."
+    )
+    inherited_from = models.ForeignKey(
+        Wallet, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         constraints = [
@@ -279,3 +421,75 @@ class EarlyBuyer(models.Model):
 
     def __str__(self):
         return f"{self.wallet} → {self.explosion}"
+
+
+class EntityEarlyBuy(models.Model):
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name="explosion_buys")
+    explosion = models.ForeignKey(Explosion, on_delete=models.CASCADE, related_name="entity_buys")
+    held_amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0)
+    held_usd = models.DecimalField(max_digits=20, decimal_places=2)
+    first_buy_at = models.DateTimeField()
+    sold_during_rise_pct = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    rank = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "explosion"], name="discovery_one_entity_buy_per_explosion"
+            )
+        ]
+        ordering = ["explosion", "rank"]
+
+    def __str__(self):
+        return f"{self.entity} → {self.explosion} (#{self.rank})"
+
+
+class ExcludedBuyer(models.Model):
+    explosion = models.ForeignKey(Explosion, on_delete=models.CASCADE, related_name="excluded")
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="exclusions")
+    reason = models.CharField(max_length=32)
+    txs_per_day = models.DecimalField(max_digits=12, decimal_places=1, null=True, blank=True)
+    held_usd = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["explosion", "wallet"], name="discovery_one_exclusion_per_explosion"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.wallet} ({self.reason})"
+
+
+class TokenTransfer(models.Model):
+    class Kind(models.TextChoices):
+        BUY = "buy", "Achat"
+        SELL = "sell", "Vente"
+        EXIT = "exit", "Sortie"
+        INTERNAL = "internal", "Interne à l'entité"
+        VAULT = "vault", "Vers un nouveau coffre"
+        RECEIVE = "receive", "Réception"
+
+    explosion = models.ForeignKey(Explosion, on_delete=models.CASCADE, related_name="transfers")
+    token = models.ForeignKey(Token, on_delete=models.CASCADE, related_name="transfers")
+    tx_hash = models.CharField(max_length=66)
+    log_index = models.PositiveIntegerField()
+    block = models.PositiveBigIntegerField()
+    at = models.DateTimeField()
+    tx_from = models.CharField(max_length=42)
+    sender = models.CharField(max_length=42)
+    recipient = models.CharField(max_length=42)
+    amount = models.DecimalField(max_digits=UINT256_DIGITS, decimal_places=0)
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["token", "tx_hash", "log_index"], name="discovery_unique_token_transfer"
+            )
+        ]
+        indexes = [models.Index(fields=["explosion", "sender"], name="discovery_transfer_sender")]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} {self.tx_hash[:10]}"

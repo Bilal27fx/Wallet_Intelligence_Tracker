@@ -6,26 +6,28 @@ from apps.discovery.services.settings import Thresholds
 from integrations.geckoterminal import MAX_OHLCV_CANDLES, Candle
 
 CONFIRMED = "confirmed"
-WAITING = "waiting"
 REJECTED = "rejected"
+
+PENDING = "pending"
+HELD = "held"
+RUG = "rug"
 
 RESOLUTIONS = (("hour", 1), ("hour", 4), ("hour", 12))
 
 
 @dataclass(frozen=True)
-class ExplosionSignal:
-    low_ts: int
-    peak_ts: int
+class Wave:
+    trough: Candle
+    peak: Candle
     multiplier: float
-    retention_pct: float | None
+    score: float
 
 
 @dataclass(frozen=True)
 class Verdict:
     status: str
     reason: str = ""
-    signal: ExplosionSignal | None = None
-    next_check_ts: int | None = None
+    wave: Wave | None = None
 
 
 def choose_resolution(pool_age_hours: float) -> tuple[str, int]:
@@ -36,47 +38,108 @@ def choose_resolution(pool_age_hours: float) -> tuple[str, int]:
     return "day", 1
 
 
-def find_best_run(candles: list[Candle]) -> tuple[Candle, Candle, float] | None:
-    """Meilleur rapport clôture du pic / plus bas précédent, en un seul passage."""
-    best = None
-    low = None
-    for candle in candles:
-        if candle.close <= 0:
+def is_peak(closes: list[float], index: int) -> bool:
+    """Début d'un sommet local : monte depuis la bougie précédente, ne remonte pas ensuite."""
+    last = index == len(closes) - 1
+    return (
+        index > 0
+        and closes[index] > closes[index - 1]
+        and (last or closes[index] >= closes[index + 1])
+    )
+
+
+def find_trough(closes: list[float], peak_index: int, breakout_multiplier: float) -> int:
+    """Dernier creux avant la montée finale vers le pic.
+
+    En remontant depuis le pic, le creux recule vers chaque clôture plus basse, sauf si le prix
+    a dépassé `breakout_multiplier` × cette clôture entre-temps : c'est alors une vague
+    précédente, retombée, qui n'appartient pas à la montée finale.
+    """
+    trough = peak_index
+    highest = 0.0
+    for index in range(peak_index - 1, -1, -1):
+        close = closes[index]
+        if close <= 0:
             continue
-        if low is None or candle.close < low.close:
-            low = candle
+        if close < closes[trough]:
+            if highest > breakout_multiplier * close:
+                break
+            trough, highest = index, 0.0
+        else:
+            highest = max(highest, close)
+    return trough
+
+
+def maturity(age_seconds: int, maturity_hours: int) -> float:
+    if maturity_hours <= 0:
+        return 1.0
+    return min(1.0, max(age_seconds, 0) / (maturity_hours * 3600))
+
+
+def find_waves(
+    candles: list[Candle], *, pool_created_ts: int, since_ts: int | None, thresholds: Thresholds
+) -> list[Wave]:
+    closes = [candle.close for candle in candles]
+    waves = []
+    for index, peak in enumerate(candles):
+        if (since_ts is not None and peak.ts < since_ts) or not is_peak(closes, index):
             continue
-        ratio = candle.close / low.close
-        if best is None or ratio > best[2]:
-            best = (low, candle, ratio)
-    return best
+        trough = candles[find_trough(closes, index, thresholds.breakout_multiplier)]
+        if trough is peak or trough.close <= 0:
+            continue
+        multiplier = peak.close / trough.close
+        weight = maturity(trough.ts - pool_created_ts, thresholds.maturity_hours)
+        waves.append(Wave(trough, peak, round(multiplier, 2), round(multiplier * weight, 2)))
+    return waves
 
 
 def detect_explosion(
-    candles: list[Candle], *, now_ts: int, current_liquidity_usd: float, thresholds: Thresholds
+    candles: list[Candle],
+    *,
+    now_ts: int,
+    pool_created_ts: int,
+    current_liquidity_usd: float,
+    thresholds: Thresholds,
+    window_hours: int | None,
 ) -> Verdict:
-    window_start = now_ts - thresholds.explosion_window_hours * 3600
-    run = find_best_run([c for c in candles if c.ts >= window_start])
-    if run is None or run[2] < thresholds.min_multiplier:
+    """Meilleure vague (score = multiplicateur × maturité) dont le pic est dans la fenêtre."""
+    since_ts = None if window_hours is None else now_ts - window_hours * 3600
+    waves = [
+        wave
+        for wave in find_waves(
+            candles, pool_created_ts=pool_created_ts, since_ts=since_ts, thresholds=thresholds
+        )
+        if wave.multiplier >= thresholds.min_multiplier
+        and (thresholds.max_multiplier <= 0 or wave.multiplier <= thresholds.max_multiplier)
+    ]
+    if not waves:
         return Verdict(REJECTED, "no_explosion")
-    low, peak, multiplier = run
+    waves = [wave for wave in waves if wave.score >= thresholds.min_score]
+    if not waves:
+        return Verdict(REJECTED, "low_score")
 
     half_window = thresholds.peak_volume_window_hours * 3600 / 2
-    volume = sum(c.volume for c in candles if abs(c.ts - peak.ts) <= half_window)
-    if volume < thresholds.min_volume_usd:
+    waves = [
+        wave
+        for wave in waves
+        if sum(c.volume for c in candles if abs(c.ts - wave.peak.ts) <= half_window)
+        >= thresholds.min_volume_usd
+    ]
+    if not waves:
         return Verdict(REJECTED, "low_volume")
     if current_liquidity_usd < thresholds.min_liquidity_usd:
         return Verdict(REJECTED, "low_liquidity")
+    return Verdict(CONFIRMED, wave=max(waves, key=lambda wave: (wave.score, wave.peak.ts)))
 
-    confirm_ts = peak.ts + thresholds.confirmation_hours * 3600
-    if now_ts < confirm_ts:
-        signal = ExplosionSignal(low.ts, peak.ts, round(multiplier, 2), None)
-        return Verdict(WAITING, signal=signal, next_check_ts=confirm_ts)
 
-    later = [c for c in candles if c.ts >= confirm_ts]
+def measure_retention(
+    candles: list[Candle], *, peak_ts: int, peak_price: float, now_ts: int, thresholds: Thresholds
+) -> tuple[float | None, str]:
+    """Clôture à pic + `confirmation_hours` rapportée au pic ; `pending` avant ce délai."""
+    confirm_ts = peak_ts + thresholds.confirmation_hours * 3600
+    if now_ts < confirm_ts or not candles or peak_price <= 0:
+        return None, PENDING
+    later = [candle for candle in candles if candle.ts >= confirm_ts]
     reference = later[0] if later else candles[-1]
-    retention = round(reference.close / peak.close * 100, 2)
-    signal = ExplosionSignal(low.ts, peak.ts, round(multiplier, 2), retention)
-    if retention < thresholds.min_retention_pct:
-        return Verdict(REJECTED, "rug", signal=signal)
-    return Verdict(CONFIRMED, signal=signal)
+    retention = round(reference.close / peak_price * 100, 2)
+    return retention, HELD if retention >= thresholds.min_retention_pct else RUG

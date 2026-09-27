@@ -45,7 +45,17 @@ def test_priority_prefers_more_explosions(chain):
     make_early_buy(one, chain, TOKEN_A)
     make_early_buy(two, chain, TOKEN_A)
     make_early_buy(two, chain, TOKEN_B)
-    assert compute_priority(two) > compute_priority(one) > 0
+    cfg = PipelineSettings.load()
+    assert compute_priority(two, cfg) > compute_priority(one, cfg) > 0
+
+
+def test_priority_weights_rug_explosions_down(chain):
+    held = Wallet.objects.create(address="0x" + "1" * 40)
+    rugged = Wallet.objects.create(address="0x" + "2" * 40)
+    make_early_buy(held, chain, TOKEN_A)
+    make_early_buy(rugged, chain, TOKEN_B, retention_status="rug")
+    cfg = PipelineSettings.load()
+    assert compute_priority(held, cfg) > compute_priority(rugged, cfg) > 0
 
 
 def test_enqueue_creates_profiles_and_reopens_filtered(chain):
@@ -145,10 +155,12 @@ def test_daily_task_schedules_subtasks(chain):
     with (
         patch.object(tasks.qualify_wallet_task, "delay") as delay,
         patch.object(tasks.refresh_wallet_task, "delay"),
+        patch.object(tasks.refresh_token_info_task, "delay") as token_info,
     ):
         result = tasks.qualify_wallets_task.apply().get()
     assert result == {"new_profiles": 0, "scheduled": 1, "refresh": 0}
     delay.assert_called_once()
+    token_info.assert_called_once()
 
 
 def test_build_clients_reuses_one_hypersync_client_per_chain(chain):

@@ -3,7 +3,7 @@
 from collections import defaultdict
 
 from apps.discovery.models import Wallet
-from apps.wallets.models import WalletLink, WalletProfile
+from apps.wallets.models import WalletProfile
 from apps.wallets.services.classify import BUY, RECEIVE, SEND
 from apps.wallets.services.positions import TradeRecord
 
@@ -31,14 +31,6 @@ def transfer_after_buy_targets(
             if pct >= threshold_pct and (current is None or pct > current["pct"]):
                 targets[(chain_id, destination)] = {"token": token, "pct": pct}
     return targets
-
-
-def add_link(from_address: str, to_address: str, kind: str, evidence: dict) -> None:
-    source, _ = Wallet.objects.get_or_create(address=from_address.lower())
-    target, _ = Wallet.objects.get_or_create(address=to_address.lower())
-    WalletLink.objects.get_or_create(
-        from_wallet=source, to_wallet=target, kind=kind, defaults={"evidence": evidence}
-    )
 
 
 ZERO_ADDRESS = "0x" + "0" * 40

@@ -150,22 +150,65 @@ def test_transfer_without_price():
     assert (parsed.transfers[0].price_usd, parsed.transfers[0].value_usd) == (None, None)
 
 
+def position(chain, symbol, address, fungible_id, numeric, price, value):
+    return {
+        "attributes": {
+            "position_type": "wallet",
+            "quantity": {"numeric": numeric},
+            "price": price,
+            "value": value,
+            "fungible_info": {
+                "symbol": symbol,
+                "implementations": [{"chain_id": chain, "address": address}],
+            },
+        },
+        "relationships": {
+            "chain": {"data": {"id": chain}},
+            "fungible": {"data": {"id": fungible_id}},
+        },
+    }
+
+
 @respx.mock
-def test_portfolio():
-    respx.get(f"{BASE_URL}/wallets/{W}/portfolio").respond(
+def test_portfolio_from_positions():
+    route = respx.get(f"{BASE_URL}/wallets/{W}/positions/").respond(
         json={
-            "data": {
-                "attributes": {
-                    "total": {"positions": 89108.31},
-                    "positions_distribution_by_chain": {
-                        "base": 1447.2,
-                        "robinhood": 87615.1,
-                        "ethereum": 46.0,
-                    },
-                }
-            }
+            "data": [
+                position(
+                    "robinhood",
+                    "AI",
+                    TOKEN.upper().replace("0X", "0x"),
+                    "ai-id",
+                    "4855000.5",
+                    0.2124,
+                    1031383.02,
+                ),
+                position("base", "ETH", None, "eth", "0.5", 2600.0, 1300.0),
+            ],
+            "links": {},
         }
     )
     portfolio = client().portfolio(W)
-    assert portfolio.total_usd == 89108.31
-    assert portfolio.by_chain["robinhood"] == 87615.1
+    assert portfolio.total_usd == 1032683.02
+    assert portfolio.by_chain == {"robinhood": 1031383.02, "base": 1300.0}
+    ai, eth = portfolio.positions
+    assert (ai.chain, ai.token_address, ai.fungible_id, ai.quantity) == (
+        "robinhood",
+        TOKEN,
+        "ai-id",
+        Decimal("4855000.5"),
+    )
+    assert (eth.token_address, eth.symbol, eth.value_usd) == (NATIVE, "ETH", 1300.0)
+    assert route.calls.last.request.url.params["filter[positions]"] == "no_filter"
+
+
+@respx.mock
+def test_operation_types_are_configurable():
+    route = respx.get(f"{BASE_URL}/wallets/{W}/transactions/").respond(
+        json={"data": [], "links": {}}
+    )
+    http = JsonHttpClient(BASE_URL, limiter=NoopLimiter(), max_retries=0)
+    ZerionClient(http, operation_types="trade,deposit").transactions(
+        W, datetime(2026, 3, 1, tzinfo=UTC)
+    )
+    assert route.calls.last.request.url.params["filter[operation_types]"] == "trade,deposit"

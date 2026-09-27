@@ -100,3 +100,32 @@ def test_price_chart_reads_year_points():
         json={"data": {"attributes": {"points": [[1759017600, 4018.26], [1759104000, 4140.23]]}}}
     )
     assert client().price_chart("eth") == [(1759017600, 4018.26), (1759104000, 4140.23)]
+
+
+@respx.mock
+def test_token_metadata_parses_supply():
+    respx.get(f"{BASE_URL}/fungibles/").respond(
+        json={
+            "data": [
+                {
+                    "id": "ai-id",
+                    "attributes": {
+                        "name": "AI",
+                        "symbol": "AI",
+                        "flags": {"verified": False},
+                        "implementations": [
+                            {"chain_id": "robinhood", "address": "0xAbC", "decimals": 18}
+                        ],
+                        "market_data": {
+                            "total_supply": 991257335.43,
+                            "circulating_supply": 991258467.25,
+                        },
+                    },
+                }
+            ]
+        }
+    )
+    [meta] = client().token_metadata([("robinhood", "0xabc")])
+    assert (meta.fungible_id, meta.total_supply, meta.verified) == ("ai-id", 991257335.43, False)
+    assert meta.implementations == {"robinhood": ("0xabc", 18)}
+    assert meta.raw["id"] == "ai-id"
