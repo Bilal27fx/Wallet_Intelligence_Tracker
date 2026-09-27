@@ -443,7 +443,7 @@ def value_linked_step(profile: WalletProfile, clients: Clients, now: datetime) -
 
 
 def compute_priority(wallet, cfg) -> float:
-    """Explosions captées (poids fort, un rug pèse `rug_priority_weight`), puis position au creux."""
+    """Explosions captées (un rug pèse `rug_priority_weight`), puis position au creux."""
     rug = Q(explosion__retention_status=Explosion.Retention.RUG)
     stats = EarlyBuyer.objects.filter(wallet=wallet).aggregate(
         kept=Count("id", filter=~rug), rugs=Count("id", filter=rug), usd=Sum("held_usd")
