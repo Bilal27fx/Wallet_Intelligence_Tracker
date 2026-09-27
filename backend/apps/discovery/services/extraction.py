@@ -154,7 +154,8 @@ def extract_buyers(
         big_pct=thresholds.vault_min_pct,
     )
     batch = max(cfg.sell_pass_batch_size, 1)
-    wave, wave_start = sorted(group_of), start
+    # Les achats avant le creux sont déjà connus par la passe 1 : on repart du creux.
+    wave, wave_start = sorted(group_of), explosion.trough_block + 1
     rise_vaults: dict[str, NewVault] = {}
     for level in range(thresholds.vault_follow_depth + 1):
         for offset in range(0, len(wave), batch):

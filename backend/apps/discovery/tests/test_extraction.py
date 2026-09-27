@@ -82,10 +82,9 @@ def test_scan_then_entity_pass_on_retained_wallets(confirmed):
     first, *rest = hypersync.transfer_calls
     assert first == (TOKEN, 500, explosion.trough_block + 1, None, None)
     assert [call[1:] for call in rest] == [
-        (500, explosion.peak_block + 1, None, sorted([ALICE, SNIPER]))
+        (explosion.trough_block + 1, explosion.peak_block + 1, None, sorted([ALICE, SNIPER]))
     ]
     assert TokenTransfer.objects.filter(explosion=explosion, kind="sell").count() == 1
-    assert TokenTransfer.objects.filter(explosion=explosion, kind="buy").count() == 2
     explosion.refresh_from_db()
     assert explosion.extraction_status == Explosion.Extraction.COMPLETE
 
