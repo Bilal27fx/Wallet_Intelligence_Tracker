@@ -8,9 +8,8 @@ from decimal import Decimal
 from django.db import transaction as db_transaction
 from django.db.models import Count, Max, Q, Sum
 
-from apps.discovery.models import Chain, EarlyBuyer, Explosion
+from apps.discovery.models import Chain, EarlyBuyer, EntityEarlyBuy, Explosion, Wallet
 from apps.wallets.models import (
-    STRONG_LINKS,
     KnownAddress,
     TokenPosition,
     TokenTrade,
@@ -18,11 +17,11 @@ from apps.wallets.models import (
     WalletProfile,
     WalletTransaction,
 )
+from apps.wallets.services import entity_graph
 from apps.wallets.services.blocks import block_at
 from apps.wallets.services.classify import BUY, RECEIVE, classify_all
 from apps.wallets.services.entities import (
     ZERO_ADDRESS,
-    add_link,
     big_receive_targets,
     ensure_linked_profile,
     transfer_after_buy_targets,
@@ -220,7 +219,7 @@ def records_for(wallet) -> list[TradeRecord]:
             block=row.block or 0,
             counterparty=row.counterparty,
         )
-        for row in TokenTrade.objects.filter(wallet=wallet)
+        for row in TokenTrade.objects.filter(wallet=wallet, is_internal=False)
     ]
 
 
@@ -313,7 +312,9 @@ def link_step(profile: WalletProfile, clients: Clients, now: datetime, records) 
         if detect_exchange(other, chain, hypersync, t, now, height):
             continue
         source, target = (wallet.address, other) if outgoing else (other, wallet.address)
-        add_link(source, target, kind, {**evidence, "chain": chain_id})
+        entity_graph.link(
+            source, target, kind, WalletLink.LinkSource.ZERION, {**evidence, "chain": chain_id}
+        )
         ensure_linked_profile(other)
 
     spotted = Chain.objects.active().filter(
@@ -325,10 +326,11 @@ def link_step(profile: WalletProfile, clients: Clients, now: datetime, records) 
         hypersync, height = context(chain)
         funding = hypersync.first_funding(wallet.address, height)
         if funding and not KnownAddress.objects.blocking_for(funding.funder, [chain.pk]).exists():
-            add_link(
+            entity_graph.link(
                 funding.funder,
                 wallet.address,
                 WalletLink.Kind.FUNDING,
+                WalletLink.LinkSource.ZERION,
                 {"chain": chain.gt_id, "block": funding.block, "value": str(funding.value)},
             )
 
@@ -361,13 +363,25 @@ def early_buys(wallet) -> list[EarlyBuy]:
 
 
 def linked_profiles(wallet):
-    outgoing = WalletLink.objects.filter(kind__in=STRONG_LINKS, from_wallet=wallet).values_list(
-        "to_wallet_id", flat=True
+    """Profils des autres wallets de la même entité."""
+    if wallet.entity_id is None:
+        return WalletProfile.objects.none()
+    return WalletProfile.objects.filter(wallet__entity_id=wallet.entity_id).exclude(wallet=wallet)
+
+
+def mark_internal(wallet) -> int:
+    """Envois / réceptions entre wallets d'une même entité : ni achat ni vente."""
+    if wallet.entity_id is None:
+        return 0
+    members = list(
+        Wallet.objects.filter(entity_id=wallet.entity_id).values_list("address", flat=True)
     )
-    incoming = WalletLink.objects.filter(kind__in=STRONG_LINKS, to_wallet=wallet).values_list(
-        "from_wallet_id", flat=True
-    )
-    return WalletProfile.objects.filter(wallet_id__in=set(outgoing) | set(incoming))
+    return TokenTrade.objects.filter(
+        wallet__entity_id=wallet.entity_id,
+        kind__in=[TokenTrade.Kind.SEND, TokenTrade.Kind.RECEIVE],
+        counterparty__in=members,
+        is_internal=False,
+    ).update(is_internal=True)
 
 
 def evaluate_wallet(profile: WalletProfile) -> str:
@@ -413,6 +427,10 @@ def decide_step(profile: WalletProfile, clients: Clients, now: datetime, cfg) ->
     if reason:
         return filter_out(profile, reason, now)
     link_step(profile, clients, now, records)
+    wallet.refresh_from_db()
+    if mark_internal(wallet):
+        recompute_positions(wallet)
+        records = records_for(wallet)
     portfolio = clients.zerion.portfolio(wallet.address)
     profile.portfolio_value_usd = _usd(portfolio.total_usd)
     profile.metrics = {
@@ -443,10 +461,17 @@ def value_linked_step(profile: WalletProfile, clients: Clients, now: datetime) -
 
 
 def compute_priority(wallet, cfg) -> float:
-    """Explosions captées (un rug pèse `rug_priority_weight`), puis position au creux."""
+    """Explosions captées par l'entité (un rug pèse `rug_priority_weight`), puis position."""
     rug = Q(explosion__retention_status=Explosion.Retention.RUG)
-    stats = EarlyBuyer.objects.filter(wallet=wallet).aggregate(
-        kept=Count("id", filter=~rug), rugs=Count("id", filter=rug), usd=Sum("held_usd")
+    rows = EarlyBuyer.objects.filter(wallet=wallet)
+    if wallet.entity_id:
+        rows = EntityEarlyBuy.objects.filter(entity_id=wallet.entity_id)
+        if not rows.exists():
+            rows = EarlyBuyer.objects.filter(wallet__entity_id=wallet.entity_id)
+    stats = rows.aggregate(
+        kept=Count("explosion", filter=~rug, distinct=True),
+        rugs=Count("explosion", filter=rug, distinct=True),
+        usd=Sum("held_usd"),
     )
     explosions = stats["kept"] + float(cfg.rug_priority_weight) * stats["rugs"]
     return explosions * 1_000_000 + min(float(stats["usd"] or 0), 999_999.0)
