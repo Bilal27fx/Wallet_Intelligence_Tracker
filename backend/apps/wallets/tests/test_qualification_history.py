@@ -127,3 +127,36 @@ def test_history_filters_occasional_traders(chain):
     profile = make_profile(chain, status="prefiltered")
     history_step(profile, make_clients(hs), NOW)
     assert profile.filter_reason == "too_few_trades"
+
+
+def spam_airdrop():
+    from apps.wallets.tests.fakes import POOL, START, tr
+
+    spam = "0x" + "6" * 40
+    return tr(START + 50, "0xspam", spam, POOL, BUYER, 10**18, POOL, spam)
+
+
+def test_receive_only_tokens_are_not_stored_for_early_buyers(chain):
+    hs = FakeWalletHyperSync(transfers={BUYER: buyer_history() + [spam_airdrop()]})
+    profile = make_profile(chain, status="prefiltered")
+    history_step(profile, make_clients(hs), NOW)
+    assert not TokenTrade.objects.filter(token__address="0x" + "6" * 40).exists()
+    assert TokenTrade.objects.filter(
+        wallet=profile.wallet, token__address=USDC, kind="receive"
+    ).exists()
+
+
+def test_linked_wallets_keep_receive_only_tokens(chain):
+    profile = make_profile(chain, address=VAULT, source="linked", depth=1, status="prefiltered")
+    history_step(profile, make_clients(), NOW)
+    assert TokenTrade.objects.filter(wallet=profile.wallet, kind="receive").exists()
+
+
+def test_rerun_updates_prices_of_existing_trades(chain):
+    profile = make_profile(chain, status="prefiltered")
+    history_step(profile, make_clients(), NOW)
+    TokenTrade.objects.filter(wallet=profile.wallet).update(usd=None)
+    profile.status = "prefiltered"
+    history_step(profile, make_clients(), NOW)
+    buy_a = TokenTrade.objects.get(wallet=profile.wallet, token__address=TOKEN_A, kind="buy")
+    assert buy_a.usd == Decimal("1000.00")

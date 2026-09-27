@@ -18,7 +18,7 @@ from apps.wallets.models import (
     WalletProfile,
 )
 from apps.wallets.services.blocks import block_at
-from apps.wallets.services.classify import Trade, classify_all
+from apps.wallets.services.classify import RECEIVE, Trade, classify_all
 from apps.wallets.services.entities import (
     add_link,
     follow,
@@ -123,7 +123,9 @@ def save_trades(wallet, chain: Chain, trades: list[Trade], usd: dict) -> None:
             )
             for trade in trades
         ],
-        ignore_conflicts=True,
+        update_conflicts=True,
+        unique_fields=["tx_hash", "log_index", "wallet"],
+        update_fields=["usd", "kind", "counterparty"],
         batch_size=BATCH_SIZE,
     )
 
@@ -155,6 +157,12 @@ def recompute_positions(wallet) -> None:
             ],
             batch_size=BATCH_SIZE,
         )
+
+
+def without_receive_only_tokens(trades: list[Trade], quote_addresses: set[str]) -> list[Trade]:
+    """Écarte les tokens seulement reçus (airdrops de spam) : jamais achetés, vendus ni envoyés."""
+    interacted = {t.transfer.token for t in trades if t.kind != RECEIVE} | quote_addresses
+    return [t for t in trades if t.transfer.token in interacted]
 
 
 def prefilter_step(profile: WalletProfile, clients: Clients, now: datetime) -> str:
@@ -207,12 +215,12 @@ def history_step(profile: WalletProfile, clients: Clients, now: datetime) -> str
         if reason:
             profile.metrics = {**profile.metrics, "distinct_tokens": distinct}
             return filter_out(profile, reason, now)
+        quotes = quote_assets(chain)
         trades = classify_all(transfers, wallet.address)
+        if profile.source == WalletProfile.Source.EARLY_BUYER:
+            trades = without_receive_only_tokens(trades, set(quotes))
         usd = price_trades(
-            trades,
-            wallet.address,
-            quote_assets(chain),
-            native_price_lookup(chain, clients.zerion, now),
+            trades, wallet.address, quotes, native_price_lookup(chain, clients.zerion, now)
         )
         save_trades(wallet, chain, trades, usd)
     recompute_positions(wallet)
