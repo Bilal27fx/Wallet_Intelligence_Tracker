@@ -98,10 +98,11 @@ class FakeZerion:
 
 
 class FakeHyperSync:
-    def __init__(self, transfers=None, error=None, page_size=2):
+    def __init__(self, transfers=None, error=None, page_size=2, tx_counts=None):
         self._transfers = transfers
         self._error = error
         self.page_size = page_size
+        self.tx_counts = tx_counts or {}
         self.transfer_calls = []
 
     def height(self):
@@ -110,17 +111,23 @@ class FakeHyperSync:
     def block_timestamp(self, number):
         return GENESIS_TS + number * BLOCK_TIME
 
-    def transfer_pages(self, token, from_block, to_block, senders=None):
-        self.transfer_calls.append((token, from_block, to_block, senders))
+    def transfer_pages(self, token, from_block, to_block, senders=None, participants=None):
+        self.transfer_calls.append((token, from_block, to_block, senders, participants))
         if self._error:
             raise self._error
+        wanted = set(participants or [])
         selected = [
             t
             for t in self._all_transfers()
-            if from_block <= t.block < to_block and (senders is None or t.sender in senders)
+            if from_block <= t.block < to_block
+            and (senders is None or t.sender in senders)
+            and (not wanted or t.sender in wanted or t.recipient in wanted)
         ]
         for start in range(0, len(selected), self.page_size):
             yield selected[start : start + self.page_size]
+
+    def wallet_tx_count(self, address, from_block, to_block, cap):
+        return min(self.tx_counts.get(address, 0), cap)
 
     def _all_transfers(self):
         if self._transfers is not None:
@@ -133,13 +140,23 @@ class FakeHyperSync:
             # Alice : 1 000 tokens à 1 $, puis sort 400 tokens avant le pic.
             self._buy(ALICE, 600, 1000),
             Transfer(
-                block_of(low_ts + 3 * HOUR), low_ts + 3 * HOUR, ALICE, ALICE, POOL, 400 * UNIT
+                block_of(low_ts + 3 * HOUR),
+                low_ts + 3 * HOUR,
+                ALICE,
+                ALICE,
+                POOL,
+                400 * UNIT,
+                "0xalicesell",
             ),
             # Petit acheteur : 10 tokens → 10 $, ignoré.
             self._buy(SMALL, 700, 10),
             # Airdrop : le destinataire n'a pas signé, ignoré.
-            Transfer(800, self.block_timestamp(800), SMALL, POOL, STRANGER, 5000 * UNIT),
+            Transfer(
+                800, self.block_timestamp(800), SMALL, POOL, STRANGER, 5000 * UNIT, "0xairdrop"
+            ),
         ]
 
     def _buy(self, wallet, block, tokens):
-        return Transfer(block, self.block_timestamp(block), wallet, POOL, wallet, tokens * UNIT)
+        return Transfer(
+            block, self.block_timestamp(block), wallet, POOL, wallet, tokens * UNIT, f"0x{block:x}"
+        )

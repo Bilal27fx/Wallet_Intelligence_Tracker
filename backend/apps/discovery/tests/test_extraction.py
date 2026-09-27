@@ -73,8 +73,14 @@ def test_two_passes_buys_to_trough_then_sells_of_kept_buyers(confirmed):
     extract(confirmed, hypersync)
     explosion = confirmed.explosion
     assert hypersync.transfer_calls == [
-        (TOKEN, 500, explosion.trough_block + 1, None),
-        (TOKEN, explosion.trough_block + 1, explosion.peak_block + 1, sorted([ALICE, SNIPER])),
+        (TOKEN, 500, explosion.trough_block + 1, None, None),
+        (
+            TOKEN,
+            explosion.trough_block + 1,
+            explosion.peak_block + 1,
+            sorted([ALICE, SNIPER]),
+            None,
+        ),
     ]
     explosion.refresh_from_db()
     assert explosion.extraction_status == Explosion.Extraction.COMPLETE

@@ -49,6 +49,8 @@ class Transfer:
     sender: str
     recipient: str
     amount: int
+    tx_hash: str = ""
+    log_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -119,23 +121,41 @@ class HyperSyncClient:
         return self._timestamps[number]
 
     def transfer_pages(
-        self, token: str, from_block: int, to_block: int, senders: list[str] | None = None
+        self,
+        token: str,
+        from_block: int,
+        to_block: int,
+        senders: list[str] | None = None,
+        participants: list[str] | None = None,
     ) -> Iterator[list[Transfer]]:
-        """Transferts ERC-20 du token page par page ; `senders` filtre l'expéditeur (topic1)."""
+        """Transferts ERC-20 du token page par page.
+
+        `senders` filtre l'expéditeur (topic1) ; `participants` garde les transferts dont
+        l'expéditeur ou le destinataire (topic2) est dans la liste.
+        """
         if from_block >= to_block:
             return
-        topics = [[TRANSFER_TOPIC]]
-        if senders:
-            topics.append([address_topic(sender) for sender in senders])
+        if participants:
+            addresses = [address_topic(address) for address in participants]
+            logs = [
+                LogSelection(address=[token], topics=[[TRANSFER_TOPIC], addresses]),
+                LogSelection(address=[token], topics=[[TRANSFER_TOPIC], [], addresses]),
+            ]
+        else:
+            topics = [[TRANSFER_TOPIC]]
+            if senders:
+                topics.append([address_topic(sender) for sender in senders])
+            logs = [LogSelection(address=[token], topics=topics)]
         query = Query(
             from_block=from_block,
             to_block=to_block,
-            logs=[LogSelection(address=[token], topics=topics)],
+            logs=logs,
             field_selection=FieldSelection(
                 block=[BlockField.NUMBER, BlockField.TIMESTAMP],
                 transaction=[TransactionField.HASH, TransactionField.FROM],
                 log=[
                     LogField.BLOCK_NUMBER,
+                    LogField.LOG_INDEX,
                     LogField.TRANSACTION_HASH,
                     LogField.DATA,
                     LogField.TOPIC0,
@@ -167,6 +187,8 @@ class HyperSyncClient:
                     sender=_topic_address(topics[1]),
                     recipient=_topic_address(topics[2]),
                     amount=_int(log.data),
+                    tx_hash=log.transaction_hash,
+                    log_index=log.log_index or 0,
                 )
             )
         return transfers

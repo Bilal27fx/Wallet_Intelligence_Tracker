@@ -15,6 +15,7 @@ def topic(address: str) -> str:
 def log(block: int, tx: str, sender: str, recipient: str, amount: int):
     return SimpleNamespace(
         block_number=block,
+        log_index=block,
         transaction_hash=tx,
         data=hex(amount),
         topics=[TRANSFER_TOPIC, topic(sender), topic(recipient)],
@@ -97,16 +98,8 @@ def test_transfer_pages_follow_pagination_and_join_tx_sender():
     )
     pages = collect(make_client(inner), "0xtoken", 50, 200)
     assert pages == [
-        [
-            Transfer(
-                block=100, timestamp=100, tx_from=ALICE, sender=POOL, recipient=ALICE, amount=1000
-            )
-        ],
-        [
-            Transfer(
-                block=160, timestamp=200, tx_from=ALICE, sender=ALICE, recipient=BOB, amount=400
-            )
-        ],
+        [Transfer(100, 100, ALICE, POOL, ALICE, 1000, tx_hash="0xt1", log_index=100)],
+        [Transfer(160, 200, ALICE, ALICE, BOB, 400, tx_hash="0xt2", log_index=160)],
     ]
     assert inner.from_blocks == [50, 150]
     assert inner.queries[0].logs[0].topics == [[TRANSFER_TOPIC]]
@@ -140,3 +133,12 @@ def test_transfer_pages_accept_real_topics_padding():
     )
     [[transfer]] = collect(make_client(inner), "0xtoken", 0, 200)
     assert transfer.amount == 7
+
+
+def test_transfer_pages_filter_on_participants():
+    inner = FakeInner([page(200)])
+    collect(make_client(inner), "0xtoken", 0, 200, participants=[ALICE])
+    assert [selection.topics for selection in inner.queries[0].logs] == [
+        [[TRANSFER_TOPIC], [topic(ALICE)]],
+        [[TRANSFER_TOPIC], [], [topic(ALICE)]],
+    ]
