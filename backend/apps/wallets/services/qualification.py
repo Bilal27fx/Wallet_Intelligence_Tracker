@@ -1,5 +1,6 @@
 """Qualification d'un wallet par étapes idempotentes : filtres, historique, entités, tags."""
 
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -360,3 +361,40 @@ def qualify_wallet(profile: WalletProfile, clients: Clients, now: datetime) -> s
     if profile.status == Status.HISTORY_FETCHED:
         complete_step(profile, clients, now)
     return profile.status
+
+
+def enqueue_profiles(now: datetime, cfg) -> int:
+    """Profils des nouveaux early buyers ; rouvre les filtrés ayant une nouvelle explosion."""
+    extra = set(
+        Chain.objects.active().filter(gt_id__in=cfg.extra_chains).values_list("pk", flat=True)
+    )
+    by_wallet: dict[int, set[int]] = defaultdict(set)
+    rows = EarlyBuyer.objects.filter(wallet__profile__isnull=True).values_list(
+        "wallet_id", "explosion__candidate__token__chain_id"
+    )
+    for wallet_id, chain_id in rows:
+        by_wallet[wallet_id].add(chain_id)
+    created = 0
+    for wallet_id, chain_ids in by_wallet.items():
+        _, was_created = WalletProfile.objects.get_or_create(
+            wallet_id=wallet_id, defaults={"chains": sorted(chain_ids | extra)}
+        )
+        created += int(was_created)
+
+    due = WalletProfile.objects.filter(
+        status=Status.FILTERED, source=WalletProfile.Source.EARLY_BUYER, next_analysis_at__lte=now
+    )
+    for profile in due:
+        fresh = set(
+            EarlyBuyer.objects.filter(
+                wallet_id=profile.wallet_id,
+                explosion__candidate__updated_at__gt=profile.analyzed_at,
+            ).values_list("explosion__candidate__token__chain_id", flat=True)
+        )
+        if fresh:
+            profile.status = Status.PENDING
+            profile.filter_reason = ""
+            profile.attempts = 0
+            profile.chains = sorted(set(profile.chains) | fresh | extra)
+            profile.save()
+    return created
