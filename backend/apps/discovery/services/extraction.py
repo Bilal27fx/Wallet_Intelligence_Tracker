@@ -6,6 +6,8 @@ transferts des wallets retenus jusqu'au pic (bruts enregistrés, ventes pendant 
 coffres suivis sur `vault_follow_depth` niveaux).
 """
 
+import logging
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -42,6 +44,9 @@ from apps.wallets.services import entity_graph
 from apps.wallets.services.settings import qualification_thresholds
 
 BATCH_SIZE = 1000
+LOG_EVERY_PAGES = 20
+
+logger = logging.getLogger(__name__)
 DAY = 86_400
 
 
@@ -111,15 +116,34 @@ def extract_buyers(
         pools={pool.address.lower() for pool in token.pools.all()},
         hub_min_senders=thresholds.hub_min_senders,
     )
+    label = f"[extraction] {token.symbol or token.address}"
     status = Explosion.Extraction.COMPLETE
-    seen = 0
+    seen = pages = 0
+    started = time.monotonic()
     start = buy_window_start(explosion, first_block, thresholds, hypersync)
+    logger.info("%s passe 1 : blocs %s → %s", label, start, explosion.trough_block)
     for page in hypersync.transfer_pages(token.address, start, explosion.trough_block + 1):
         scanner.add(page)
         seen += len(page)
+        pages += 1
+        if pages % LOG_EVERY_PAGES == 0:
+            logger.info(
+                "%s passe 1 : %s pages, %s transferts, %.0fs",
+                label,
+                pages,
+                seen,
+                time.monotonic() - started,
+            )
         if seen >= cfg.max_transfers_per_token:
             status = Explosion.Extraction.PARTIAL
             break
+    logger.info(
+        "%s passe 1 terminée : %s transferts, %s acheteurs, %.0fs",
+        label,
+        seen,
+        len(scanner.bought),
+        time.monotonic() - started,
+    )
 
     known = set(
         KnownAddress.objects.filter(kind__in=BLOCKING_KINDS).values_list("address", flat=True)
@@ -132,6 +156,7 @@ def extract_buyers(
     )
     trough_price = scanner.price_at(int(explosion.trough_at.timestamp()))
     scale = 10**token.decimals
+    started = time.monotonic()
     selection = select_entities(
         scanner,
         kinds,
@@ -142,6 +167,13 @@ def extract_buyers(
         scale=scale,
         min_usd=thresholds.min_buy_usd,
         max_entities=thresholds.max_buyers,
+    )
+    logger.info(
+        "%s sélection : %s entités, %s bots écartés, %.0fs",
+        label,
+        len(selection.selected),
+        len(selection.bots),
+        time.monotonic() - started,
     )
 
     group_of = {w: i for i, c in enumerate(selection.selected) for w in c.wallets}
@@ -158,6 +190,15 @@ def extract_buyers(
     wave, wave_start = sorted(group_of), explosion.trough_block + 1
     rise_vaults: dict[str, NewVault] = {}
     for level in range(thresholds.vault_follow_depth + 1):
+        started, pages = time.monotonic(), 0
+        logger.info(
+            "%s passe entité niveau %s : %s wallets, blocs %s → %s",
+            label,
+            level,
+            len(wave),
+            wave_start,
+            explosion.peak_block,
+        )
         for offset in range(0, len(wave), batch):
             for page in hypersync.transfer_pages(
                 token.address,
@@ -166,12 +207,30 @@ def extract_buyers(
                 participants=wave[offset : offset + batch],
             ):
                 tracker.add(page)
+                pages += 1
+                if pages % LOG_EVERY_PAGES == 0:
+                    logger.info(
+                        "%s passe entité : %s pages, %s transferts retenus, %.0fs",
+                        label,
+                        pages,
+                        len(tracker.rows),
+                        time.monotonic() - started,
+                    )
         new = tracker.take_new_vaults()
+        logger.info(
+            "%s passe entité niveau %s terminée : %s pages, %s nouveaux coffres, %.0fs",
+            label,
+            level,
+            pages,
+            len(new),
+            time.monotonic() - started,
+        )
         rise_vaults.update(new)
         if not new or level == thresholds.vault_follow_depth:
             break
         wave, wave_start = sorted(new), min(vault.block for vault in new.values())
 
+    started = time.monotonic()
     with transaction.atomic():
         _save_links(token, selection, tracker, rise_vaults)
         _save_buyers(
@@ -190,6 +249,7 @@ def extract_buyers(
         explosion.save(update_fields=["extraction_status"])
         candidate.status = Candidate.Status.BUYERS_EXTRACTED
         candidate.save(update_fields=["status", "updated_at"])
+    logger.info("%s enregistrement : %.0fs", label, time.monotonic() - started)
     return len(selection.selected)
 
 
