@@ -1,6 +1,6 @@
 """Client Zerion : chaînes et prix uniquement (aucune donnée de wallet)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from urllib.parse import parse_qs, urlparse
@@ -95,9 +95,23 @@ class TransactionsPage:
 
 
 @dataclass(frozen=True)
+class PortfolioItem:
+    chain: str
+    token_address: str
+    fungible_id: str
+    symbol: str
+    position_type: str
+    quantity: Decimal
+    price_usd: float | None
+    value_usd: float | None
+
+
+@dataclass(frozen=True)
 class Portfolio:
     total_usd: float
     by_chain: dict[str, float]
+    positions: list[PortfolioItem] = field(default_factory=list)
+    raw: dict = field(default_factory=dict)
 
 
 def _optional_float(value) -> float | None:
@@ -144,6 +158,26 @@ def _transaction(item: dict) -> ZerionTransaction:
     )
 
 
+def _position(item: dict) -> PortfolioItem:
+    attributes = item["attributes"]
+    relationships = item.get("relationships") or {}
+    chain = ((relationships.get("chain") or {}).get("data") or {}).get("id", "")
+    info = attributes.get("fungible_info") or {}
+    implementation = next(
+        (i for i in info.get("implementations") or [] if i.get("chain_id") == chain), {}
+    )
+    return PortfolioItem(
+        chain=chain,
+        token_address=(implementation.get("address") or NATIVE).lower(),
+        fungible_id=((relationships.get("fungible") or {}).get("data") or {}).get("id", ""),
+        symbol=info.get("symbol") or "",
+        position_type=attributes.get("position_type") or "",
+        quantity=Decimal(str((attributes.get("quantity") or {}).get("numeric") or "0")),
+        price_usd=_optional_float(attributes.get("price")),
+        value_usd=_optional_float(attributes.get("value")),
+    )
+
+
 def _cursor(next_url: str | None) -> str | None:
     if not next_url:
         return None
@@ -151,8 +185,9 @@ def _cursor(next_url: str | None) -> str | None:
 
 
 class ZerionClient:
-    def __init__(self, http):
+    def __init__(self, http, operation_types: str = OPERATION_TYPES):
         self._http = http
+        self._operation_types = operation_types
 
     def chains(self) -> list[ZerionChain]:
         payload = self._http.get("/chains/")
@@ -226,7 +261,7 @@ class ZerionClient:
             "currency": "usd",
             "page[size]": 100,
             "filter[trash]": "only_non_trash",
-            "filter[operation_types]": OPERATION_TYPES,
+            "filter[operation_types]": self._operation_types,
             "filter[min_mined_at]": int(since.timestamp() * 1000),
         }
         if cursor:
@@ -238,13 +273,26 @@ class ZerionClient:
         )
 
     def portfolio(self, address: str) -> Portfolio:
-        attributes = self._http.get(f"/wallets/{address}/portfolio", params={"currency": "usd"})[
-            "data"
-        ]["attributes"]
-        return Portfolio(
-            total_usd=float((attributes.get("total") or {}).get("positions") or 0.0),
-            by_chain={
-                k: float(v)
-                for k, v in (attributes.get("positions_distribution_by_chain") or {}).items()
-            },
-        )
+        """Portefeuille détaillé par token (`/positions/`), total et répartition recalculés."""
+        params = {
+            "currency": "usd",
+            "filter[positions]": "no_filter",
+            "filter[trash]": "only_non_trash",
+            "page[size]": 100,
+        }
+        items: list[PortfolioItem] = []
+        pages = []
+        cursor = None
+        while True:
+            page_params = {**params, "page[after]": cursor} if cursor else params
+            payload = self._http.get(f"/wallets/{address}/positions/", params=page_params)
+            pages.append(payload)
+            items += [_position(item) for item in payload.get("data", [])]
+            cursor = _cursor((payload.get("links") or {}).get("next"))
+            if cursor is None:
+                break
+        by_chain: dict[str, float] = {}
+        for item in items:
+            by_chain[item.chain] = round(by_chain.get(item.chain, 0.0) + (item.value_usd or 0), 2)
+        total = round(sum(item.value_usd or 0.0 for item in items), 2)
+        return Portfolio(total, by_chain, items, {"pages": pages})

@@ -47,7 +47,8 @@ def zerion(cfg: PipelineSettings) -> zr.ZerionClient:
     limiter = RateLimiter(_redis(), "zerion", cfg.zerion_requests_per_min)
     budget = DailyBudget(_redis(), "zerion", cfg.zerion_daily_budget)
     return zr.ZerionClient(
-        _http(zr.BASE_URL, cfg, limiter, auth=(settings.ZERION_API_KEY, ""), budget=budget)
+        _http(zr.BASE_URL, cfg, limiter, auth=(settings.ZERION_API_KEY, ""), budget=budget),
+        operation_types=cfg.zerion_operation_types,
     )
 
 

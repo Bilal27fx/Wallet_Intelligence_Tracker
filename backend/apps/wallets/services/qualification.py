@@ -34,6 +34,7 @@ from apps.wallets.services.filters import (
     prefilter_reason,
 )
 from apps.wallets.services.positions import TradeRecord, aggregate_positions
+from apps.wallets.services.raw import save_portfolio
 from apps.wallets.services.settings import qualification_thresholds
 from apps.wallets.services.tags import EarlyBuy, wallet_tags
 from apps.wallets.services.zerion_history import counterparty, is_quote, movements
@@ -432,6 +433,7 @@ def decide_step(profile: WalletProfile, clients: Clients, now: datetime, cfg) ->
         recompute_positions(wallet)
         records = records_for(wallet)
     portfolio = clients.zerion.portfolio(wallet.address)
+    save_portfolio(wallet, portfolio, now)
     profile.portfolio_value_usd = _usd(portfolio.total_usd)
     profile.metrics = {
         **profile.metrics,
@@ -447,6 +449,7 @@ def decide_step(profile: WalletProfile, clients: Clients, now: datetime, cfg) ->
 def value_linked_step(profile: WalletProfile, clients: Clients, now: datetime) -> str:
     """Wallet lié : 1 appel /portfolio, puis réévaluation des wallets qui lui sont liés."""
     portfolio = clients.zerion.portfolio(profile.wallet.address)
+    save_portfolio(profile.wallet, portfolio, now)
     profile.portfolio_value_usd = _usd(portfolio.total_usd)
     profile.metrics = {
         **profile.metrics,
