@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -42,3 +43,17 @@ def test_hypersync_wallet_queries_on_robinhood():
     assert client.wallet_transfers(ROBINHOOD_WALLET, 0, height)
     assert client.wallet_tx_count(ROBINHOOD_WALLET, 0, height, cap=5) >= 5
     assert client.first_funding(ROBINHOOD_WALLET, height) is not None
+
+
+@pytest.mark.skipif(not os.environ.get("ZERION_API_KEY"), reason="ZERION_API_KEY absente")
+def test_zerion_history_page_and_portfolio():
+    client = ZerionClient(
+        JsonHttpClient(BASE_URL, limiter=NoopLimiter(), auth=(os.environ["ZERION_API_KEY"], ""))
+    )
+    page = client.transactions(
+        "0x11edfaca715703cb91c384d84cd2551122ab3019", datetime.now(UTC) - timedelta(days=180)
+    )
+    assert page.transactions and page.transactions[0].transfers
+    assert any(t.value_usd is not None for tx in page.transactions for t in tx.transfers)
+    time.sleep(1.5)
+    assert client.portfolio("0x11edfaca715703cb91c384d84cd2551122ab3019").total_usd > 0

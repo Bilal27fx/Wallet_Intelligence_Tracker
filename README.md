@@ -91,14 +91,13 @@ Lancer le pipeline à la main :
 
 Tests contre les vraies API : `make test args="-m live integrations"`.
 
-## Qualification des wallets
+## Qualification des wallets (v2)
 
-Chaque jour à 08:00 UTC (tâche `qualification-daily`), après la découverte, chaque early buyer est qualifié en 5 étapes :
+Chaque jour à 08:00 UTC (tâche `qualification-daily`) :
 
-1. **Pré-filtre (HyperSync)** : bots (fréquence), wallets inactifs, exchanges connus ;
-2. **Historique par token (HyperSync)** : achats, ventes, envois, réceptions sur `history_days`, valorisés par la contrepartie de chaque transaction ; farmers et bots MEV écartés ;
-3. **Entités** : transfert après achat, financement initial, financeur commun — les exchanges et dépôts d'exchange ne relient personne ;
-4. **Valeur de l'entité** (prix Zerion + solde natif RPC) : entre `min_portfolio_usd` et `max_portfolio_usd` ;
-5. **Tags** : SNIPER, EARLY_BUYER, ACCUMULATEUR, FLIPPER, HOLDER.
+1. **Pré-filtre HyperSync (gratuit)** sur les chaînes `prefilter_chains` (Base, Robinhood, BSC, Ethereum, Arc) + la chaîne où le wallet a été repéré : bot, inactif, farmer, MEV, exchange — mesures additionnées.
+2. **Historique Zerion 6 mois**, toutes chaînes EVM, pour les survivants : chaque mouvement avec son type, sa quantité, son prix et sa valeur au moment de la transaction. Reprise au curseur le lendemain si le budget est atteint.
+3. **Décision sur historique complet** : farmer / MEV revérifiés, liens forts (transfert après achat, gros transfert reçu en %), valeur `/portfolio` du wallet + de ses wallets liés directs, tags.
+4. **Mise à jour incrémentale** des wallets qualifiés tous les `history_refresh_days` jours.
 
-Zerion ne sert qu'aux prix, sous le budget quotidien `zerion_daily_budget` (Réglages du pipeline). Les seuils sont dans **Réglages de qualification** (globaux + par chaîne) ; les listes d'exchanges s'importent dans **Known addresses → Importer un CSV**.
+Ordre de traitement : wallets liés (1 appel), historiques en cours, nouveaux wallets par priorité. Budget Zerion : `zerion_daily_budget` (1 800/jour, plan Developer).
