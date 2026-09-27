@@ -163,9 +163,10 @@ def extract_buyers(
         max_entities=thresholds.max_buyers,
     )
     logger.info(
-        "%s sélection : %s entités, %s bots écartés, %.0fs",
+        "%s sélection : %s entités retenues sur %s au-dessus du seuil, %s bots écartés, %.0fs",
         label,
         len(selection.selected),
+        selection.eligible,
         len(selection.bots),
         time.monotonic() - started,
     )

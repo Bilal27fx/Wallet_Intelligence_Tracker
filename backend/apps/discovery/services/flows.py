@@ -246,6 +246,7 @@ class Selection:
     flows: Flows
     selected: list[EntityCandidate]
     bots: dict[str, tuple[float, float]]
+    eligible: int = 0
 
 
 def select_entities(
@@ -297,4 +298,4 @@ def select_entities(
             if max_entities and len(selected) >= max_entities:
                 break
         if not found:
-            return Selection(flows, selected, bots)
+            return Selection(flows, selected, bots, len(ranked))
