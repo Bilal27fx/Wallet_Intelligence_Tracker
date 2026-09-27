@@ -95,3 +95,16 @@ def test_ai_token_trough_is_mid_august():
     )
     trough = datetime.fromtimestamp(verdict.wave.trough.ts, tz=UTC)
     assert datetime(2026, 8, 15, tzinfo=UTC) <= trough <= datetime(2026, 8, 20, tzinfo=UTC)
+
+
+KNOWN_WALLET = "0x44df085447dbebcf69c6675c3b8a795c7fdeb3f4"
+
+
+@pytest.mark.skipif(not os.environ.get("ZERION_API_KEY"), reason="ZERION_API_KEY absente")
+def test_zerion_portfolio_by_token_and_token_metadata():
+    client = zerion.ZerionClient(http(zerion.BASE_URL, auth=(os.environ["ZERION_API_KEY"], "")))
+    portfolio = client.portfolio(KNOWN_WALLET)
+    assert portfolio.positions and portfolio.total_usd > 0
+    assert abs(sum(portfolio.by_chain.values()) - portfolio.total_usd) < 1
+    [meta] = client.token_metadata([("robinhood", AI_TOKEN)])
+    assert meta.total_supply and meta.total_supply > 0
