@@ -1,9 +1,12 @@
 """Tests contre les vraies API. Lancer avec : make test args="-m live integrations"."""
 
 import os
+from datetime import UTC, datetime
 
 import pytest
 
+from apps.discovery.services.explosion import detect_explosion
+from apps.discovery.services.settings import Thresholds
 from integrations import coingecko, geckoterminal, zerion
 from integrations.http import JsonHttpClient
 from integrations.hypersync import CHAINS_URL, HyperSyncClient, HyperSyncDirectory
@@ -48,3 +51,41 @@ def test_hypersync_reads_blocks_and_transfers():
     transfers = [transfer for page in pages for transfer in page]
     assert transfers
     assert all(t.tx_from.startswith("0x") and len(t.tx_from) == 42 for t in transfers)
+
+
+AI_TOKEN = "0x2e8c31162b855a2ffa90f6f8634643ad6f111e18"
+LIVE_THRESHOLDS = Thresholds(
+    min_change_24h_pct=50,
+    min_liquidity_usd=10_000,
+    min_volume_usd=50_000,
+    peak_volume_window_hours=24,
+    min_fdv_usd=100_000,
+    max_fdv_usd=100_000_000,
+    max_pool_age_hours=720,
+    min_multiplier=5,
+    min_retention_pct=30,
+    confirmation_hours=24,
+    sniper_blocks=3,
+    min_buy_usd=500,
+    max_buyers=300,
+    explosion_window_hours=168,
+    maturity_hours=336,
+    breakout_multiplier=2,
+    buyer_window_hours=0,
+)
+
+
+def test_ai_token_trough_is_mid_august():
+    client = geckoterminal.GeckoTerminalClient(http(geckoterminal.BASE_URL))
+    pool = max(client.token_pools("robinhood", AI_TOKEN), key=lambda p: p.liquidity_usd)
+    candles = client.ohlcv("robinhood", pool.address, "hour", 4)
+    verdict = detect_explosion(
+        candles,
+        now_ts=candles[-1].ts,
+        pool_created_ts=int(pool.created_at.timestamp()),
+        current_liquidity_usd=pool.liquidity_usd,
+        thresholds=LIVE_THRESHOLDS,
+        window_hours=None,
+    )
+    trough = datetime.fromtimestamp(verdict.wave.trough.ts, tz=UTC)
+    assert datetime(2026, 8, 15, tzinfo=UTC) <= trough <= datetime(2026, 8, 20, tzinfo=UTC)

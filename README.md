@@ -76,8 +76,17 @@ Chaque jour à 06:00 UTC (tâche périodique `discovery-daily`, modifiable dans 
 
 1. synchronise les chaînes (GeckoTerminal, CoinGecko, HyperSync, Zerion) ;
 2. collecte les candidats (trending global + top volume par chaîne active) ;
-3. détecte les explosions (×N, volume, liquidité, rétention après le pic) ;
+3. détecte les explosions et les confirme sans attente ;
 4. extrait les early buyers EOA significatifs via HyperSync.
+
+**Détection (explosion v2).** Chaque pic local dont la date tombe dans `explosion_window_hours` (aucune fenêtre pour un ajout manuel) reçoit son *dernier creux* : en remontant depuis le pic, le creux recule vers chaque prix plus bas, sauf si une vague précédente a dépassé `breakout_multiplier` × ce prix puis est retombée. Une vague est valable si pic / creux ≥ `min_multiplier`, avec le volume et la liquidité suffisants. Parmi les vagues valables, on retient le meilleur score = multiplicateur × min(1, âge du token au creux ÷ `maturity_hours`) : une vague mature l'emporte sur un pic de lancement.
+
+**Rétention.** Ce n'est plus une attente : la rétention est mesurée dès que le pic a `confirmation_hours` (`pending` → `held` / `rug`). Les acheteurs d'une explosion `rug` pèsent `rug_priority_weight` dans la priorité de qualification.
+
+**Extraction au fil de l'eau.**
+- Passe 1 : les achats sont agrégés page par page, de `max(création du pool, creux − buyer_window_hours)` jusqu'au creux (`buyer_window_hours` = 0 : depuis le lancement).
+- Passe 2 : les ventes des acheteurs retenus, du creux au pic, par lots de `sell_pass_batch_size` adresses.
+- Au-delà de `max_transfers_per_token`, la passe 1 s'arrête et l'explosion est marquée `partial` au lieu d'être rejetée.
 
 Clés à renseigner dans `.env` : `ENVIO_API_TOKEN`, `ZERION_API_KEY` (et `COINGECKO_API_KEY`, optionnelle).
 
