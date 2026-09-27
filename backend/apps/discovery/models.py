@@ -200,6 +200,9 @@ class PipelineSettings(models.Model):
     max_attempts = models.PositiveSmallIntegerField(default=3)
     gecko_requests_per_min = models.PositiveIntegerField(default=30)
     hypersync_requests_per_min = models.PositiveIntegerField(default=60)
+    hypersync_timeout_seconds = models.PositiveIntegerField(
+        default=30, help_text="Délai max d'une requête HyperSync avant nouvelle tentative."
+    )
     http_timeout_seconds = models.PositiveIntegerField(default=15)
     http_max_retries = models.PositiveSmallIntegerField(default=3)
     http_backoff_seconds = models.PositiveIntegerField(

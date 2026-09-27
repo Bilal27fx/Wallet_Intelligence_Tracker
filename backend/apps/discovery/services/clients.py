@@ -67,5 +67,9 @@ def hypersync(chain: Chain, cfg: PipelineSettings) -> HyperSyncClient:
         raise ImproperlyConfigured("ENVIO_API_TOKEN manquant")
     limiter = RateLimiter(_redis(), "hypersync", cfg.hypersync_requests_per_min)
     return HyperSyncClient(
-        chain.evm_id, settings.ENVIO_API_TOKEN, limiter, max_retries=cfg.http_max_retries
+        chain.evm_id,
+        settings.ENVIO_API_TOKEN,
+        limiter,
+        max_retries=cfg.http_max_retries,
+        timeout_seconds=cfg.hypersync_timeout_seconds,
     )

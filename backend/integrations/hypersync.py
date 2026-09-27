@@ -92,10 +92,22 @@ def _topic_address(topic: str) -> str:
 
 
 class HyperSyncClient:
-    def __init__(self, chain_id: int, api_token: str, limiter, max_retries: int = 3, inner=None):
+    def __init__(
+        self,
+        chain_id: int,
+        api_token: str,
+        limiter,
+        max_retries: int = 3,
+        timeout_seconds: int = 30,
+        inner=None,
+    ):
+        # Sans délai court, une requête bloquée côté serveur peut attendre plusieurs minutes.
         self._inner = inner or hypersync.HypersyncClient(
             ClientConfig(
-                url=hypersync_url(chain_id), bearer_token=api_token, max_num_retries=max_retries
+                url=hypersync_url(chain_id),
+                bearer_token=api_token,
+                max_num_retries=max_retries,
+                http_req_timeout_millis=timeout_seconds * 1000,
             )
         )
         self._limiter = limiter
