@@ -26,9 +26,9 @@ def block_of(ts: int) -> int:
     return (ts - GENESIS_TS) // BLOCK_TIME
 
 
-def explosive_candles(start_ts: int) -> list[Candle]:
+def explosive_candles(start_ts: int, after_peak: float = 3.0) -> list[Candle]:
     """Bas 0.5 à l'heure 10, pic 5.0 à l'heure 20 (×10), puis 3.0 (rétention 60 %)."""
-    closes = [1.0] * 10 + [0.5] + [0.5 + 0.45 * i for i in range(1, 10)] + [5.0] + [3.0] * 30
+    closes = [1.0] * 10 + [0.5] + [0.5 + 0.45 * i for i in range(1, 10)] + [5.0] + [after_peak] * 30
     return [Candle(start_ts + i * HOUR, c, c, c, c, 100_000) for i, c in enumerate(closes)]
 
 

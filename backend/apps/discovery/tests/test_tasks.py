@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from apps.discovery import tasks
-from apps.discovery.models import Candidate, Chain, EarlyBuyer, PipelineSettings
+from apps.discovery.models import Candidate, Chain, EarlyBuyer, Explosion, PipelineSettings
 from apps.discovery.tests.factories import make_candidate, make_token
 from apps.discovery.tests.fakes import (
     NOW,
@@ -60,6 +60,16 @@ def test_extract_task_schedules_one_subtask_per_confirmed_candidate(fake_clients
     with patch.object(tasks.extract_candidate_buyers, "delay") as delay:
         assert tasks.extract_early_buyers_task.apply().get() == 1
     delay.assert_called_once_with(Candidate.objects.get().pk)
+
+
+def test_analyze_task_measures_pending_retention(fake_clients):
+    tasks.sync_chains_task.apply()
+    tasks.collect_candidates_task.apply()
+    tasks.analyze_candidates_task.apply()
+    Explosion.objects.update(retention_status="pending", retention_pct=None)
+    counts = tasks.analyze_candidates_task.apply().get()
+    assert counts["retention_held"] == 1
+    assert Explosion.objects.get().retention_status == "held"
 
 
 def test_failure_increments_attempts_then_rejects(fake_clients):

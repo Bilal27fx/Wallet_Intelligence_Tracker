@@ -3,7 +3,7 @@ from datetime import timedelta
 import pytest
 
 from apps.discovery.models import Candidate, Explosion, Pool
-from apps.discovery.services.analysis import analyze_candidate
+from apps.discovery.services.analysis import analyze_candidate, update_retention
 from apps.discovery.tests.factories import make_candidate, make_chain, make_token
 from apps.discovery.tests.fakes import (
     GENESIS_TS,
@@ -45,6 +45,9 @@ def test_confirms_explosion_and_stores_blocks(candidate):
     assert explosion.peak_block == block_of(start + 20 * HOUR)
     assert float(explosion.multiplier) == 10.0
     assert float(explosion.retention_pct) == 60.0
+    assert explosion.retention_status == Explosion.Retention.HELD
+    assert float(explosion.score) == 0.3
+    assert explosion.peak_price == 5.0
     assert candidate.token.decimals == 18
     assert Pool.objects.get(address=POOL).created_block == 500
 
@@ -56,13 +59,28 @@ def test_rejects_when_no_explosion(candidate):
     assert candidate.rejection_reason == "no_explosion"
 
 
-def test_waits_when_peak_is_recent(candidate):
+def test_recent_peak_is_confirmed_with_pending_retention(candidate):
     recent = POOL_CREATED + timedelta(hours=30)
-    assert analyze(candidate, now=recent) == Candidate.Status.WAITING_CONFIRMATION
-    candidate.refresh_from_db()
-    peak = int(POOL_CREATED.timestamp()) + 20 * HOUR
-    assert candidate.next_check_at.timestamp() == peak + 24 * HOUR
-    assert not Explosion.objects.exists()
+    assert analyze(candidate, now=recent) == Candidate.Status.CONFIRMED
+    explosion = Explosion.objects.get()
+    assert explosion.retention_status == Explosion.Retention.PENDING
+    assert explosion.retention_pct is None
+    assert update_retention(explosion, gt=FakeGeckoTerminal(), now=NOW) == "held"
+    explosion.refresh_from_db()
+    assert float(explosion.retention_pct) == 60.0
+
+
+def test_rug_is_confirmed_and_flagged(candidate):
+    rug = FakeGeckoTerminal(candles=explosive_candles(int(POOL_CREATED.timestamp()), 0.6))
+    assert analyze(candidate, gt=rug) == Candidate.Status.CONFIRMED
+    assert Explosion.objects.get().retention_status == Explosion.Retention.RUG
+
+
+def test_peak_outside_window_is_rejected_unless_manual(candidate):
+    later = NOW + timedelta(days=30)
+    assert analyze(candidate, now=later) == Candidate.Status.REJECTED
+    manual = make_candidate(candidate.token, sources=["manual"])
+    assert analyze(manual, now=later) == Candidate.Status.CONFIRMED
 
 
 def test_inactive_chain_is_rejected(candidate):

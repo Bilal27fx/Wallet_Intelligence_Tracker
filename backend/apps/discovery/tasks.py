@@ -4,12 +4,11 @@ import logging
 from collections import Counter
 
 from celery import chain, shared_task
-from django.db.models import Q
 from django.utils import timezone
 
-from apps.discovery.models import Candidate, PipelineSettings
+from apps.discovery.models import Candidate, Explosion, PipelineSettings
 from apps.discovery.services import clients
-from apps.discovery.services.analysis import analyze_candidate
+from apps.discovery.services.analysis import analyze_candidate, update_retention
 from apps.discovery.services.candidates import collect_candidates
 from apps.discovery.services.chains import sync_chains
 from apps.discovery.services.extraction import extract_buyers
@@ -55,8 +54,7 @@ def analyze_candidates_task() -> dict[str, int]:
     gt = clients.geckoterminal(cfg)
     now = timezone.now()
     due = Candidate.objects.filter(
-        Q(status=Candidate.Status.CANDIDATE)
-        | Q(status=Candidate.Status.WAITING_CONFIRMATION, next_check_at__lte=now)
+        status__in=[Candidate.Status.CANDIDATE, Candidate.Status.WAITING_CONFIRMATION]
     ).select_related("token__chain")
     counts: Counter[str] = Counter()
     for candidate in due:
@@ -71,6 +69,15 @@ def analyze_candidates_task() -> dict[str, int]:
             record_failure(candidate, exc, cfg.max_attempts)
             status = "error"
         counts[status] += 1
+
+    pending = Explosion.objects.filter(retention_status=Explosion.Retention.PENDING).select_related(
+        "candidate__token__chain"
+    )
+    for explosion in pending:
+        try:
+            counts[f"retention_{update_retention(explosion, gt=gt, now=now)}"] += 1
+        except Exception:
+            logger.exception("Échec de la mesure de rétention de l'explosion %s", explosion.pk)
     logger.info("Analyse : %s", dict(counts))
     return dict(counts)
 
