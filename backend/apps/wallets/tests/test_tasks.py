@@ -96,3 +96,12 @@ def test_budget_exhaustion_is_not_a_failure(chain):
         tasks.qualify_wallet_task.apply(args=[profile.pk])
     profile.refresh_from_db()
     assert (profile.status, profile.attempts) == ("pending", 0)
+
+
+def test_build_clients_reuses_one_hypersync_client_per_chain(chain):
+    with (
+        patch.object(tasks.clients, "zerion"),
+        patch.object(tasks.clients, "hypersync", side_effect=lambda c, cfg: object()),
+    ):
+        built = tasks.build_clients(PipelineSettings.load())
+        assert built.hypersync_for(chain) is built.hypersync_for(chain)

@@ -26,8 +26,16 @@ IN_PROGRESS = (
 
 
 def build_clients(cfg: PipelineSettings) -> Clients:
+    # Un client HyperSync par chaîne : son cache de timestamps de blocs sert à toutes les étapes.
+    hypersync_clients: dict[int, object] = {}
+
+    def hypersync_for(chain):
+        if chain.pk not in hypersync_clients:
+            hypersync_clients[chain.pk] = clients.hypersync(chain, cfg)
+        return hypersync_clients[chain.pk]
+
     return Clients(
-        hypersync_for=lambda chain: clients.hypersync(chain, cfg),
+        hypersync_for=hypersync_for,
         zerion=clients.zerion(cfg),
         rpc_for=lambda chain: clients.rpc(chain, cfg),
     )
