@@ -155,10 +155,12 @@ def test_daily_task_schedules_subtasks(chain):
     with (
         patch.object(tasks.qualify_wallet_task, "delay") as delay,
         patch.object(tasks.refresh_wallet_task, "delay"),
+        patch.object(tasks.refresh_token_info_task, "delay") as token_info,
     ):
         result = tasks.qualify_wallets_task.apply().get()
     assert result == {"new_profiles": 0, "scheduled": 1, "refresh": 0}
     delay.assert_called_once()
+    token_info.assert_called_once()
 
 
 def test_build_clients_reuses_one_hypersync_client_per_chain(chain):

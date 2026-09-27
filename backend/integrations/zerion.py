@@ -158,6 +158,37 @@ def _transaction(item: dict) -> ZerionTransaction:
     )
 
 
+@dataclass(frozen=True)
+class TokenMeta:
+    fungible_id: str
+    symbol: str
+    name: str
+    verified: bool
+    total_supply: float | None
+    circulating_supply: float | None
+    implementations: dict[str, tuple[str, int]]
+    raw: dict
+
+
+def _meta(item: dict) -> TokenMeta:
+    attributes = item["attributes"]
+    market = attributes.get("market_data") or {}
+    return TokenMeta(
+        fungible_id=item["id"],
+        symbol=attributes.get("symbol") or "",
+        name=attributes.get("name") or "",
+        verified=bool((attributes.get("flags") or {}).get("verified")),
+        total_supply=_optional_float(market.get("total_supply")),
+        circulating_supply=_optional_float(market.get("circulating_supply")),
+        implementations={
+            impl["chain_id"]: (impl["address"].lower(), int(impl.get("decimals") or 0))
+            for impl in attributes.get("implementations") or []
+            if impl.get("address")
+        },
+        raw=item,
+    )
+
+
 def _position(item: dict) -> PortfolioItem:
     attributes = item["attributes"]
     relationships = item.get("relationships") or {}
@@ -230,6 +261,23 @@ class ZerionClient:
                     if (chain, address) in requested:
                         found[(chain, address)] = fungible
         return found
+
+    def token_metadata(self, implementations: list[tuple[str, str]]) -> list[TokenMeta]:
+        """Métadonnées brutes (dont supply) des tokens, par lots d'implémentations."""
+        wanted = sorted({(chain, address.lower()) for chain, address in implementations})
+        metas: list[TokenMeta] = []
+        for start in range(0, len(wanted), MAX_IMPLEMENTATIONS_PER_CALL):
+            batch = wanted[start : start + MAX_IMPLEMENTATIONS_PER_CALL]
+            payload = self._http.get(
+                "/fungibles/",
+                params={
+                    "filter[fungible_implementations]": ",".join(f"{c}:{a}" for c, a in batch),
+                    "currency": "usd",
+                    "page[size]": 100,
+                },
+            )
+            metas += [_meta(item) for item in payload.get("data", [])]
+        return metas
 
     def fungible(self, fungible_id: str) -> Fungible:
         payload = self._http.get(f"/fungibles/{fungible_id}", params={"currency": "usd"})
