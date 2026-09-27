@@ -6,9 +6,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from django.db import transaction as db_transaction
-from django.db.models import Count, Max, Sum
+from django.db.models import Count, Max, Q, Sum
 
-from apps.discovery.models import Chain, EarlyBuyer
+from apps.discovery.models import Chain, EarlyBuyer, Explosion
 from apps.wallets.models import (
     STRONG_LINKS,
     KnownAddress,
@@ -442,10 +442,14 @@ def value_linked_step(profile: WalletProfile, clients: Clients, now: datetime) -
     return profile.status
 
 
-def compute_priority(wallet) -> float:
-    """Nombre d'explosions captées (poids fort), puis montant total des early buys."""
-    stats = EarlyBuyer.objects.filter(wallet=wallet).aggregate(n=Count("id"), usd=Sum("bought_usd"))
-    return stats["n"] * 1_000_000 + min(float(stats["usd"] or 0), 999_999.0)
+def compute_priority(wallet, cfg) -> float:
+    """Explosions captées (poids fort, un rug compte `rug_priority_weight`), puis montant acheté."""
+    rug = Q(explosion__retention_status=Explosion.Retention.RUG)
+    stats = EarlyBuyer.objects.filter(wallet=wallet).aggregate(
+        kept=Count("id", filter=~rug), rugs=Count("id", filter=rug), usd=Sum("bought_usd")
+    )
+    explosions = stats["kept"] + float(cfg.rug_priority_weight) * stats["rugs"]
+    return explosions * 1_000_000 + min(float(stats["usd"] or 0), 999_999.0)
 
 
 def enqueue_profiles(now: datetime, cfg) -> int:
@@ -464,7 +468,7 @@ def enqueue_profiles(now: datetime, cfg) -> int:
         status__in=[Status.PENDING, Status.PREFILTERED, Status.HISTORY_FETCHED],
     ).select_related("wallet")
     for profile in waiting:
-        priority = compute_priority(profile.wallet)
+        priority = compute_priority(profile.wallet, cfg)
         if priority != profile.priority:
             profile.priority = priority
             profile.save(update_fields=["priority"])
@@ -482,7 +486,7 @@ def enqueue_profiles(now: datetime, cfg) -> int:
             profile.attempts = 0
             profile.history_cursor = ""
             profile.history_complete = False
-            profile.priority = compute_priority(profile.wallet)
+            profile.priority = compute_priority(profile.wallet, cfg)
             profile.save()
     return created
 

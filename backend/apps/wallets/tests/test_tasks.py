@@ -45,7 +45,17 @@ def test_priority_prefers_more_explosions(chain):
     make_early_buy(one, chain, TOKEN_A)
     make_early_buy(two, chain, TOKEN_A)
     make_early_buy(two, chain, TOKEN_B)
-    assert compute_priority(two) > compute_priority(one) > 0
+    cfg = PipelineSettings.load()
+    assert compute_priority(two, cfg) > compute_priority(one, cfg) > 0
+
+
+def test_priority_weights_rug_explosions_down(chain):
+    held = Wallet.objects.create(address="0x" + "1" * 40)
+    rugged = Wallet.objects.create(address="0x" + "2" * 40)
+    make_early_buy(held, chain, TOKEN_A)
+    make_early_buy(rugged, chain, TOKEN_B, retention_status="rug")
+    cfg = PipelineSettings.load()
+    assert compute_priority(held, cfg) > compute_priority(rugged, cfg) > 0
 
 
 def test_enqueue_creates_profiles_and_reopens_filtered(chain):
