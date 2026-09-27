@@ -25,11 +25,13 @@ T = Thresholds(
     min_multiplier=5,
     min_retention_pct=30,
     confirmation_hours=24,
-    confirmation_timeout_hours=168,
     sniper_blocks=3,
     min_buy_usd=500,
     max_buyers=300,
     explosion_window_hours=1000,
+    maturity_hours=0,
+    breakout_multiplier=2,
+    buyer_window_hours=0,
 )
 
 

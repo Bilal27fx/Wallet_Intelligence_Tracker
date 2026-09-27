@@ -41,7 +41,7 @@ def test_confirms_explosion_and_stores_blocks(candidate):
     assert candidate.status == Candidate.Status.CONFIRMED
     explosion = candidate.explosion
     start = int(POOL_CREATED.timestamp())
-    assert explosion.low_block == block_of(start + 10 * HOUR)
+    assert explosion.trough_block == block_of(start + 10 * HOUR)
     assert explosion.peak_block == block_of(start + 20 * HOUR)
     assert float(explosion.multiplier) == 10.0
     assert float(explosion.retention_pct) == 60.0
@@ -63,16 +63,6 @@ def test_waits_when_peak_is_recent(candidate):
     peak = int(POOL_CREATED.timestamp()) + 20 * HOUR
     assert candidate.next_check_at.timestamp() == peak + 24 * HOUR
     assert not Explosion.objects.exists()
-
-
-def test_waiting_too_long_is_rejected(candidate):
-    Candidate.objects.filter(pk=candidate.pk).update(
-        status=Candidate.Status.WAITING_CONFIRMATION, created_at=NOW - timedelta(hours=200)
-    )
-    candidate.refresh_from_db()
-    assert analyze(candidate) == Candidate.Status.REJECTED
-    candidate.refresh_from_db()
-    assert candidate.rejection_reason == "confirmation_timeout"
 
 
 def test_inactive_chain_is_rejected(candidate):

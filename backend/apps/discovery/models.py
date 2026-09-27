@@ -15,11 +15,13 @@ THRESHOLD_FIELDS = (
     "min_multiplier",
     "min_retention_pct",
     "confirmation_hours",
-    "confirmation_timeout_hours",
     "sniper_blocks",
     "min_buy_usd",
     "max_buyers",
     "explosion_window_hours",
+    "maturity_hours",
+    "breakout_multiplier",
+    "buyer_window_hours",
 )
 CLOSED_STATUSES = ("rejected", "buyers_extracted")
 UINT256_DIGITS = 78
@@ -80,7 +82,6 @@ class DetectionSettings(models.Model):
     min_multiplier = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     min_retention_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     confirmation_hours = models.PositiveIntegerField(null=True, blank=True)
-    confirmation_timeout_hours = models.PositiveIntegerField(null=True, blank=True)
     sniper_blocks = models.PositiveIntegerField(null=True, blank=True)
     min_buy_usd = _usd()
     max_buyers = models.PositiveIntegerField(
@@ -89,7 +90,23 @@ class DetectionSettings(models.Model):
     explosion_window_hours = models.PositiveIntegerField(
         null=True,
         blank=True,
-        help_text="Le point bas et le pic doivent se trouver dans ces dernières heures.",
+        help_text="Le pic doit se trouver dans ces dernières heures (ignoré pour un ajout manuel).",
+    )
+    maturity_hours = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Âge du token au creux à partir duquel une vague compte pleinement. "
+        "0 = pas de pondération.",
+    )
+    breakout_multiplier = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Une vague précédente retombée coupe le creux si elle a dépassé ce multiple.",
+    )
+    buyer_window_hours = models.PositiveIntegerField(
+        null=True, blank=True, help_text="Heures d'achat avant le creux. 0 = depuis le lancement."
     )
 
     class Meta:
@@ -151,6 +168,15 @@ class PipelineSettings(models.Model):
     )
     history_refresh_days = models.PositiveIntegerField(default=7)
     qualification_batch_size = models.PositiveIntegerField(default=100)
+    sell_pass_batch_size = models.PositiveIntegerField(
+        default=500, help_text="Adresses d'acheteurs par requête de la passe des ventes."
+    )
+    rug_priority_weight = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        default=0.2,
+        help_text="Poids d'une explosion « rug » dans la priorité de qualification.",
+    )
 
     class Meta:
         verbose_name = "réglages du pipeline"
@@ -241,13 +267,30 @@ class Candidate(models.Model):
 
 
 class Explosion(models.Model):
+    class Retention(models.TextChoices):
+        PENDING = "pending", "À mesurer"
+        HELD = "held", "Tenue"
+        RUG = "rug", "Rug"
+
+    class Extraction(models.TextChoices):
+        COMPLETE = "complete", "Complète"
+        PARTIAL = "partial", "Partielle"
+
     candidate = models.OneToOneField(Candidate, on_delete=models.CASCADE, related_name="explosion")
-    low_block = models.PositiveBigIntegerField()
-    low_at = models.DateTimeField()
+    trough_block = models.PositiveBigIntegerField()
+    trough_at = models.DateTimeField()
     peak_block = models.PositiveBigIntegerField()
     peak_at = models.DateTimeField()
+    peak_price = models.FloatField(null=True, blank=True)
     multiplier = models.DecimalField(max_digits=12, decimal_places=2)
-    retention_pct = models.DecimalField(max_digits=7, decimal_places=2)
+    score = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    retention_pct = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    retention_status = models.CharField(
+        max_length=16, choices=Retention.choices, default=Retention.PENDING
+    )
+    extraction_status = models.CharField(
+        max_length=16, choices=Extraction.choices, blank=True, default=""
+    )
 
     def __str__(self):
         return f"{self.candidate.token} ×{self.multiplier}"

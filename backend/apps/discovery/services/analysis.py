@@ -54,9 +54,6 @@ def analyze_candidate(
     if not chain.is_active:
         return reject(candidate, "chain_inactive")
     thresholds = thresholds_for(chain)
-    timeout = candidate.created_at + timedelta(hours=thresholds.confirmation_timeout_hours)
-    if candidate.status == Candidate.Status.WAITING_CONFIRMATION and timeout < now:
-        return reject(candidate, "confirmation_timeout")
 
     try:
         history = fetch_price_history(gt, chain, token, now)
@@ -104,8 +101,8 @@ def analyze_candidate(
     Explosion.objects.update_or_create(
         candidate=candidate,
         defaults={
-            "low_block": low_block,
-            "low_at": _datetime(signal.low_ts),
+            "trough_block": low_block,
+            "trough_at": _datetime(signal.low_ts),
             "peak_block": peak_block,
             "peak_at": _datetime(signal.peak_ts),
             "multiplier": signal.multiplier,

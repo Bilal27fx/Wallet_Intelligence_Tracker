@@ -39,7 +39,7 @@ def extract_buyers(
     history = fetch_price_history(gt, chain, token, now)
     buyers = aggregate_buyers(
         transfers,
-        low_block=explosion.low_block,
+        low_block=explosion.trough_block,
         peak_block=explosion.peak_block,
         pool_created_block=first_block,
         candles=history.candles,

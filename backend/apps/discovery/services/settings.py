@@ -20,11 +20,13 @@ class Thresholds:
     min_multiplier: float
     min_retention_pct: float
     confirmation_hours: int
-    confirmation_timeout_hours: int
     sniper_blocks: int
     min_buy_usd: float
     max_buyers: int
     explosion_window_hours: int
+    maturity_hours: int
+    breakout_multiplier: float
+    buyer_window_hours: int
 
 
 def thresholds_for(chain: Chain) -> Thresholds:

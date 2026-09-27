@@ -109,7 +109,17 @@ class CandidateAdmin(admin.ModelAdmin):
 
 @admin.register(Explosion)
 class ExplosionAdmin(ReadOnlyAdmin):
-    list_display = ["candidate", "multiplier", "retention_pct", "low_at", "peak_at"]
+    list_display = [
+        "candidate",
+        "multiplier",
+        "score",
+        "retention_status",
+        "retention_pct",
+        "extraction_status",
+        "trough_at",
+        "peak_at",
+    ]
+    list_filter = ["retention_status", "extraction_status"]
     list_select_related = ["candidate__token__chain"]
 
 
