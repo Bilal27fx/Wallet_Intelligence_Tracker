@@ -130,23 +130,42 @@ def test_group_entities_sums_members():
     assert entity.held_usd == 3000.0
 
 
-def test_select_entities_replaces_bot_by_next():
-    scanner = scan([buy(1, A, 5000), buy(2, B, 1000), buy(3, C, 800)])
+def select(scanner, bot_check, batch=10, max_entities=2):
     kinds = classify_recipients(
         scanner, known=set(), deposit_forward_pct=90, deposit_forward_hours=1
     )
-    selection = select_entities(
+    return select_entities(
         scanner,
         kinds,
-        bot_check=lambda address: (address == A, 300.0),
+        bot_check=bot_check,
+        batch_size=batch,
         big_pct=20,
         trough_price=1.0,
         scale=UNIT,
         min_usd=500,
-        max_entities=2,
+        max_entities=max_entities,
+    )
+
+
+def test_select_entities_replaces_bot_by_next():
+    scanner = scan([buy(1, A, 5000), buy(2, B, 1000), buy(3, C, 800)])
+    selection = select(
+        scanner, lambda batch: {a: (a == A, 300.0 if a == A else 1.0) for a in batch}
     )
     assert [c.wallets for c in selection.selected] == [[B], [C]]
     assert selection.bots == {A: (300.0, 5000.0)}
+
+
+def test_bot_checks_are_batched():
+    scanner = scan([buy(1, A, 5000), buy(2, B, 1000), buy(3, C, 800)])
+    batches = []
+
+    def check(batch):
+        batches.append(list(batch))
+        return {a: (False, 1.0) for a in batch}
+
+    select(scanner, check, batch=2, max_entities=3)
+    assert batches == [[A, B], [C]]
 
 
 def test_entity_pass_counts_rise_sells_and_finds_new_vault():

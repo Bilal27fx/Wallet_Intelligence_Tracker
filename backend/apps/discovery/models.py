@@ -148,7 +148,7 @@ class DetectionSettings(models.Model):
     bot_window_days = models.PositiveSmallIntegerField(
         null=True,
         blank=True,
-        help_text="Jours avant le creux sur lesquels on mesure l'activité bot.",
+        help_text="Jours récents sur lesquels on mesure l'activité (tx signées/jour).",
     )
     vault_min_pct = models.DecimalField(
         max_digits=6,

@@ -63,23 +63,27 @@ def buy_window_start(
     return find_block_at(start_ts, first_block, explosion.trough_block, hypersync.block_timestamp)
 
 
-def bot_checker(hypersync, chain, explosion: Explosion, thresholds: Thresholds, q):
-    """Transactions signées sur les `bot_window_days` jours avant le creux (cache Redis)."""
+def bot_checker(hypersync, chain, thresholds: Thresholds, q, now: datetime):
+    """Activité actuelle : tx signées par jour sur `bot_window_days`, par lots, en cache."""
     days = thresholds.bot_window_days
     limit = q.max_txs_per_day * days
-    start_ts = int(explosion.trough_at.timestamp()) - days * DAY
-    start = find_block_near(start_ts, explosion.trough_block, hypersync.block_timestamp)
+    height = hypersync.height()
+    start = find_block_near(int(now.timestamp()) - days * DAY, height, hypersync.block_timestamp)
     cache = redis.Redis.from_url(settings.REDIS_URL)
+    prefix = f"botrate:{chain.pk}:{now:%Y-%m-%d}:{days}:"
 
-    def check(address: str) -> tuple[bool, float]:
-        key = f"botcheck:{chain.pk}:{explosion.trough_block}:{days}:{address}"
-        cached = cache.get(key)
-        if cached is None:
-            count = hypersync.wallet_tx_count(address, start, explosion.trough_block + 1, limit + 1)
-            cache.set(key, count, ex=30 * DAY)
-        else:
-            count = int(cached)
-        return count > limit, round(count / days, 1)
+    def check(addresses: list[str]) -> dict[str, tuple[bool, float]]:
+        cached = dict(zip(addresses, cache.mget([prefix + a for a in addresses]), strict=True))
+        counts = {a: int(v) for a, v in cached.items() if v is not None}
+        missing = [a for a, v in cached.items() if v is None]
+        if missing:
+            fresh = hypersync.tx_counts(missing, start, height + 1)
+            counts.update(fresh)
+            pipe = cache.pipeline()
+            for address, count in fresh.items():
+                pipe.set(prefix + address, count, ex=DAY)
+            pipe.execute()
+        return {a: (counts.get(a, 0) > limit, round(counts.get(a, 0) / days, 1)) for a in addresses}
 
     return check
 
@@ -131,7 +135,8 @@ def extract_buyers(
     selection = select_entities(
         scanner,
         kinds,
-        bot_check=bot_checker(hypersync, chain, explosion, thresholds, q),
+        bot_check=bot_checker(hypersync, chain, thresholds, q, now),
+        batch_size=max(cfg.sell_pass_batch_size, 1),
         big_pct=thresholds.vault_min_pct,
         trough_price=trough_price,
         scale=scale,

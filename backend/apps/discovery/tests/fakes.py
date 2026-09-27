@@ -102,7 +102,7 @@ class FakeHyperSync:
         self._transfers = transfers
         self._error = error
         self.page_size = page_size
-        self.tx_counts = tx_counts or {}
+        self.activity = tx_counts or {}
         self.transfer_calls = []
 
     def height(self):
@@ -127,7 +127,10 @@ class FakeHyperSync:
             yield selected[start : start + self.page_size]
 
     def wallet_tx_count(self, address, from_block, to_block, cap):
-        return min(self.tx_counts.get(address, 0), cap)
+        return min(self.activity.get(address, 0), cap)
+
+    def tx_counts(self, addresses, from_block, to_block):
+        return {address: self.activity.get(address, 0) for address in addresses}
 
     def _all_transfers(self):
         if self._transfers is not None:

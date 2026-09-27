@@ -142,3 +142,13 @@ def test_transfer_pages_filter_on_participants():
         [[TRANSFER_TOPIC], [topic(ALICE)]],
         [[TRANSFER_TOPIC], [], [topic(ALICE)]],
     ]
+
+
+def test_tx_counts_counts_each_signer_in_one_query():
+    txs = [SimpleNamespace(from_=a) for a in (ALICE, ALICE.upper().replace("0X", "0x"), BOB)]
+    inner = FakeInner([page(120, txs=txs[:2]), page(200, txs=txs[2:])])
+    counts = make_client(inner).tx_counts([ALICE, BOB], 100, 200)
+    assert counts == {ALICE: 2, BOB: 1}
+    assert inner.from_blocks == [100, 120]
+    [selection] = inner.queries[0].transactions
+    assert selection.from_ == [ALICE, BOB]

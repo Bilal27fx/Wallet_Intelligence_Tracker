@@ -251,14 +251,19 @@ def select_entities(
     scanner: FlowScanner,
     kinds: dict[str, str],
     *,
-    bot_check: Callable[[str], tuple[bool, float]],
+    bot_check: Callable[[list[str]], dict[str, tuple[bool, float]]],
+    batch_size: int,
     big_pct: float,
     trough_price: float,
     scale: int,
     min_usd: float,
     max_entities: int,
 ) -> Selection:
-    """Top des entités au creux ; un bot trouvé est retiré et le calcul recommence sans lui."""
+    """Top des entités au creux ; un bot trouvé est retiré et le calcul recommence sans lui.
+
+    Les wallets sont vérifiés par lots (`bot_check` reçoit une liste d'adresses), dans l'ordre
+    du classement, pour ne faire qu'une requête par lot.
+    """
     bots: dict[str, tuple[float, float]] = {}
     checked: dict[str, tuple[bool, float]] = {}
     while True:
@@ -270,14 +275,20 @@ def select_entities(
         ]
         selected: list[EntityCandidate] = []
         found = False
-        for candidate in ranked:
+        for index, candidate in enumerate(ranked):
+            if any(wallet not in checked for wallet in candidate.wallets):
+                pending: list[str] = []
+                for later in ranked[index:]:
+                    pending += [w for w in later.wallets if w not in checked and w not in pending]
+                    if len(pending) >= batch_size:
+                        break
+                checked.update(bot_check(pending[: max(batch_size, len(candidate.wallets))]))
             for wallet in candidate.wallets:
-                if wallet not in checked:
-                    checked[wallet] = bot_check(wallet)
-                if checked[wallet][0]:
+                is_bot, per_day = checked.get(wallet, (False, 0.0))
+                if is_bot:
                     holder = flows.holders.get(wallet)
                     usd = round(holder.held / scale * trough_price, 2) if holder else 0.0
-                    bots[wallet] = (checked[wallet][1], usd)
+                    bots[wallet] = (per_day, usd)
                     found = True
             if found:
                 break

@@ -207,6 +207,23 @@ class HyperSyncClient:
                 break
         return count
 
+    def tx_counts(self, addresses: list[str], from_block: int, to_block: int) -> dict[str, int]:
+        """Transactions signées par chaque adresse, en une requête pour tout le lot."""
+        wanted = [address.lower() for address in addresses]
+        query = Query(
+            from_block=from_block,
+            to_block=to_block,
+            transactions=[TransactionSelection(from_=wanted)],
+            field_selection=FieldSelection(transaction=[TransactionField.FROM]),
+        )
+        counts = dict.fromkeys(wanted, 0)
+        for data in self._pages(query, to_block):
+            for tx in data.transactions:
+                signer = (tx.from_ or "").lower()
+                if signer in counts:
+                    counts[signer] += 1
+        return counts
+
     def distinct_counterparties(
         self, address: str, from_block: int, to_block: int, cap: int
     ) -> int:
